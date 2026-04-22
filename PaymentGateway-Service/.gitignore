@@ -1,0 +1,23 @@
+# Node modules
+node_modules/
+
+# Python cache and venv
+__pycache__/
+*.pyc
+venv/
+
+# Build outputs
+dist/
+build/
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
+
+# Git ignores but API folders should be kept
+!api/
+
+# Explicitly allow .env files
+!.env
+

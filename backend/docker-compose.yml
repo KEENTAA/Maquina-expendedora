@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: grog-postgres
+    environment:
+      POSTGRES_USER: grog
+      POSTGRES_PASSWORD: grog
+      POSTGRES_DB: grog
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: grog-mosquitto
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+
+  auth-service:
+    build: ./auth-service
+    env_file: .env
+    ports:
+      - "8030:8030"
+    command: sh -c "pip install --no-cache-dir bcrypt==4.0.1 && uvicorn app.main:app --host 0.0.0.0 --port 8030"
+    depends_on:
+      - postgres
+
+  simupay-service:
+    build: ./simupay-integration-service
+    env_file: .env
+    ports:
+      - "8020:8020"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8020
+    depends_on:
+      - postgres
+
+  orchestrator-service:
+    build: ./transaction-orchestrator-service
+    env_file: .env
+    ports:
+      - "8010:8010"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8010
+    depends_on:
+      - postgres
+      - simupay-service
+
+  vending-service:
+    build: ./vending-service
+    env_file: .env
+    ports:
+      - "8040:8040"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8040
+    depends_on:
+      - postgres
+
+  iot-service:
+    build: ./iot-bridge-service
+    env_file: .env
+    ports:
+      - "8050:8050"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8050
+    depends_on:
+      - postgres
+      - mosquitto
+
+volumes:
+  pgdata:
