@@ -40,6 +40,23 @@ class HttpApiClient {
     return _decodeObject(response);
   }
 
+  Future<Map<String, dynamic>> patchJson(
+    Uri uri, {
+    Map<String, String>? headers,
+    Map<String, dynamic>? body,
+    int retries = 2,
+  }) async {
+    final response = await _withRetry(
+      () => _client.patch(
+        uri,
+        headers: {'Content-Type': 'application/json', ...?headers},
+        body: jsonEncode(body ?? <String, dynamic>{}),
+      ),
+      retries: retries,
+    );
+    return _decodeObject(response);
+  }
+
   Future<http.Response> _withRetry(
     Future<http.Response> Function() call, {
     required int retries,

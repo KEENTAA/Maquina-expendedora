@@ -410,19 +410,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 onTap:
                     linked
                         ? () async {
-                          final rawCode = await Navigator.of(
+                          final rawCode = (await Navigator.of(
                             context,
                           ).push<String>(
                             MaterialPageRoute(
                               builder: (_) => const QrScannerScreen(),
                             ),
-                          );
+                          ))?.trim();
 
                           if (!context.mounted ||
                               rawCode == null ||
                               rawCode.isEmpty) {
                             return;
                           }
+
+                          debugPrint('QR Detectado: $rawCode');
 
                           final purchase = context.read<PurchaseController>();
                           bool success = false;
@@ -447,8 +449,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               );
                             } else {
                               final split = normalizedRawCode.split('/init/');
-                              machineId = split.last.split('?').first;
+                              final machinePart = split.last.split('?').first;
+                              machineId = machinePart;
                             }
+                            
+                            debugPrint('Iniciando TX Máquina: $machineId');
                             success = await purchase.initMachineTransaction(
                               machineId,
                               productId: productId,

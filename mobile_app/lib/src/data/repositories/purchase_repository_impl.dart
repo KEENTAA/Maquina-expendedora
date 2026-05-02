@@ -81,6 +81,7 @@ class PurchaseRepositoryImpl implements PurchaseRepository {
     final rawState = (data['state'] as String? ?? 'PENDING').toUpperCase();
     final state = switch (rawState) {
       'QR_GENERATED' => ProductTransactionState.qrGenerated,
+      'QR_PRINTED' => ProductTransactionState.pending,
       'PAID_PENDING_DISPENSE' => ProductTransactionState.paidPendingDispense,
       'COMPLETED' => ProductTransactionState.completed,
       'FAILED' => ProductTransactionState.failed,

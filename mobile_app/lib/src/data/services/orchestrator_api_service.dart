@@ -45,4 +45,24 @@ class OrchestratorApiService {
       ),
     );
   }
+
+  Future<Map<String, dynamic>> getAdminStatsSummary() {
+    return _http.getJson(
+      Uri.parse('${AppConfig.orchestratorUrl}/api/v1/admin/stats/summary'),
+    );
+  }
+
+  Future<Map<String, dynamic>> getTemperatureHistory({int intervalMinutes = 10}) {
+    return _http.getJson(
+      Uri.parse(
+        '${AppConfig.orchestratorUrl}/api/v1/admin/stats/temperature-history?interval_minutes=$intervalMinutes',
+      ),
+    );
+  }
+
+  Future<Map<String, dynamic>> getDistanceHistory() {
+    return _http.getJson(
+      Uri.parse('${AppConfig.orchestratorUrl}/api/v1/admin/stats/distance-history'),
+    );
+  }
 }

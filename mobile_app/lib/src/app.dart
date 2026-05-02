@@ -9,6 +9,7 @@ import 'presentation/controllers/auth_controller.dart';
 import 'presentation/controllers/profile_controller.dart';
 import 'presentation/controllers/purchase_controller.dart';
 import 'presentation/controllers/wallet_controller.dart';
+import 'presentation/controllers/admin_dashboard_controller.dart';
 import 'presentation/screens/auth/login_screen.dart';
 import 'presentation/screens/dashboard/dashboard_screen.dart';
 
@@ -39,6 +40,9 @@ class GrogApp extends StatelessWidget {
         ChangeNotifierProvider(
           create:
               (_) => PurchaseController(purchaseRepository: purchaseRepository),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => AdminDashboardController(),
         ),
       ],
       child: MaterialApp(

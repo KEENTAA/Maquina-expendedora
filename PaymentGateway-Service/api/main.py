@@ -60,6 +60,9 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -732,6 +735,43 @@ def internal_refund_payment(session_id: str, x_api_key: str = Header(default=Non
     tx = db.query(Transaction).filter(Transaction.id == session_id).first()
     if not tx:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # Si la transacción fue cobrada, devolvemos el saldo al usuario
+    # Intentamos identificar al pagador (ya sea por tx.user_id o por el historial)
+    payer_id = tx.user_id
+    if not payer_id:
+        # Buscar en el historial quién pagó esta sesión
+        payment_record = db.query(Transaction).filter(
+            Transaction.external_id == session_id,
+            Transaction.type == "payment"
+        ).first()
+        if payment_record:
+            payer_id = payment_record.user_id
+
+    if tx.status in {"paid_pending_capture", "completed"} and payer_id:
+        user = db.query(User).filter(User.id == payer_id).first()
+        if user and user.wallet:
+            # 1. Devolver el dinero al usuario
+            user.wallet.balance += tx.amount
+            print(f"REFUND: Returned Bs. {tx.amount} to user {user.email}")
+            
+            # 2. Registrar el ingreso por reembolso en el historial
+            db.add(Transaction(
+                id=str(uuid.uuid4()),
+                user_id=user.id,
+                amount=tx.amount,
+                status="completed",
+                method="refund-system",
+                type="income",
+                external_id=tx.id
+            ))
+            
+            # 3. Si el comercio ya tenía el dinero (completed), se lo quitamos
+            if tx.status == "completed":
+                merchant = db.query(User).filter(User.email == DEFAULT_MERCHANT_EMAIL).first()
+                if merchant and merchant.wallet:
+                    merchant.wallet.balance -= tx.amount
+                    print(f"REFUND: Debited Bs. {tx.amount} from merchant {DEFAULT_MERCHANT_EMAIL}")
 
     tx.status = "failed"
     db.commit()
