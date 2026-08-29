@@ -1,9 +1,11 @@
+import '../services/auth_api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../domain/entities/user_profile.dart';
 import '../../domain/repositories/profile_repository.dart';
 
 class ProfileRepositoryImpl implements ProfileRepository {
+  final AuthApiService _authApi = AuthApiService();
   @override
   Future<UserProfile> load(String email) async {
     final prefs = await SharedPreferences.getInstance();
@@ -17,7 +19,7 @@ class ProfileRepositoryImpl implements ProfileRepository {
     );
   }
 
-  @override
+@override
   Future<UserProfile> save(UserProfile profile) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_nameKey(profile.email), profile.displayName);
@@ -26,6 +28,18 @@ class ProfileRepositoryImpl implements ProfileRepository {
     } else {
       await prefs.setString(_avatarKey(profile.email), profile.avatarBase64!);
     }
+    
+    // Sync to backend
+    try {
+      await _authApi.updateProfile(
+        email: profile.email,
+        fullName: profile.displayName,
+        avatarBase64: profile.avatarBase64 ?? "",
+      );
+    } catch (e) {
+      // Ignore if offline
+    }
+    
     return profile;
   }
 

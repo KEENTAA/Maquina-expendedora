@@ -13,6 +13,7 @@ import 'presentation/controllers/admin_dashboard_controller.dart';
 import 'presentation/controllers/notification_controller.dart';
 import 'presentation/screens/auth/login_screen.dart';
 import 'presentation/screens/dashboard/dashboard_screen.dart';
+import 'presentation/screens/dashboard/main_layout_screen.dart';
 
 class GrogApp extends StatelessWidget {
   const GrogApp({super.key});
@@ -76,7 +77,7 @@ class _AuthGate extends StatelessWidget {
           );
         }
         if (auth.isAuthenticated) {
-          return const DashboardScreen();
+          return const MainLayoutScreen();
         }
         return const LoginScreen();
       },

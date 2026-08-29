@@ -4,6 +4,9 @@ import 'package:nfc_manager/nfc_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import 'package:provider/provider.dart';
+import '../../controllers/auth_controller.dart';
+
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -19,7 +22,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _loading = true;
 
   final LocalAuthentication _localAuth = LocalAuthentication();
-  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
 
   @override
   void initState() {
@@ -52,6 +57,88 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _promptSavePassword(String email) async {
+    final passwordCtrl = TextEditingController();
+    bool obscure = true;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: const Row(
+                children: [
+                  Icon(Icons.fingerprint, color: Color(0xFF4F46E5)),
+                  SizedBox(width: 8),
+                  Text('Vincular contraseña', style: TextStyle(fontSize: 18)),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Ingresa tu contraseña actual ($email) para guardarla de forma segura y permitir el inicio de sesión automático con tu huella.',
+                    style: const TextStyle(fontSize: 13, color: Colors.black87),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: passwordCtrl,
+                    obscureText: obscure,
+                    decoration: InputDecoration(
+                      labelText: 'Contraseña',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                      suffixIcon: IconButton(
+                        icon: Icon(obscure ? Icons.visibility_off : Icons.visibility),
+                        onPressed: () => setDialogState(() => obscure = !obscure),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('Omitir por ahora'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    if (passwordCtrl.text.trim().isNotEmpty) {
+                      Navigator.of(ctx).pop(true);
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4F46E5),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('Guardar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (saved == true && passwordCtrl.text.trim().isNotEmpty) {
+      await _secureStorage.write(key: 'saved_email', value: email);
+      await _secureStorage.write(key: 'saved_password', value: passwordCtrl.text.trim());
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Contraseña vinculada exitosamente a tu huella dactilar.'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _toggleFingerprint(bool value) async {
     if (value) {
       // Verify fingerprint before enabling
@@ -69,6 +156,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
           );
         }
         return;
+      }
+
+      // Check and prompt for password if not stored yet
+      if (mounted) {
+        final auth = context.read<AuthController>();
+        final email = auth.session?.email;
+        if (email != null) {
+          final savedPass = await _secureStorage.read(key: 'saved_password');
+          final savedEmail = await _secureStorage.read(key: 'saved_email');
+          if (savedPass == null || savedEmail != email) {
+            await _promptSavePassword(email);
+          }
+        }
       }
     } else {
       // When disabling, clear saved credentials

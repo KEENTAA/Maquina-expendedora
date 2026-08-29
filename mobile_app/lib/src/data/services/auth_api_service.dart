@@ -36,4 +36,20 @@ class AuthApiService {
       body: {'email': email, 'simupay_email': simupayEmail},
     );
   }
+
+  Future<Map<String, dynamic>> updateProfile({
+    required String email,
+    String? fullName,
+    String? avatarBase64,
+  }) {
+    return _http.putJson(
+      Uri.parse('${AppConfig.authUrl}/api/v1/auth/profile'),
+      body: {
+        'email': email,
+        if (fullName != null) 'full_name': fullName,
+        if (avatarBase64 != null) 'avatar_base64': avatarBase64,
+      },
+    );
+  }
+
 }

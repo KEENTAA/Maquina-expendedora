@@ -49,6 +49,7 @@ class Inventory(Base):
     price: Mapped[float] = mapped_column(Float, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Integer, default=1) # 1=True, 0=False para SQLite
     slot_type: Mapped[str] = mapped_column(String, default="soda") # "soda" o "snack"
+    image_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class GlobalSetting(Base):
     __tablename__ = "global_settings"
@@ -58,6 +59,20 @@ class GlobalSetting(Base):
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Grog Vending Service")
 
+
+
+from sqlalchemy import inspect, text
+
+def _ensure_schema_compatibility() -> None:
+    inspector = inspect(engine)
+    if "inventory" not in inspector.get_table_names():
+        return
+    cols = {col["name"] for col in inspector.get_columns("inventory")}
+    with engine.begin() as conn:
+        if "image_base64" not in cols:
+            conn.execute(text("ALTER TABLE inventory ADD COLUMN image_base64 TEXT"))
+
+_ensure_schema_compatibility()
 
 def _seed() -> None:
     with SessionLocal() as db:
@@ -104,6 +119,23 @@ def _seed() -> None:
 
 _seed()
 
+
+
+class ImageRequest(BaseModel):
+    image_base64: str
+
+@app.patch("/api/v1/machines/{machine_id}/inventory/{slot_or_id}/image")
+def update_inventory_image(machine_id: str, slot_or_id: str, req: ImageRequest) -> dict:
+    with SessionLocal() as db:
+        item = db.query(Inventory).filter(
+            (Inventory.machine_id == machine_id) & 
+            ((Inventory.id == slot_or_id) | (Inventory.slot == slot_or_id))
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Inventory item not found")
+        item.image_base64 = req.image_base64
+        db.commit()
+        return {"status": "updated", "slot": item.slot}
 
 class InventoryUpdateRequest(BaseModel):
     stock: int
@@ -164,7 +196,8 @@ def machine_inventory(machine_id: str) -> dict:
                     "product_name": prod.name,
                     "price": inv.price if inv.price is not None else prod.price,
                     "is_enabled": bool(inv.is_enabled),
-                    "slot_type": inv.slot_type
+                    "slot_type": inv.slot_type,
+                    "image_base64": inv.image_base64
                 }
                 for inv, prod in rows
             ]
@@ -191,7 +224,8 @@ def get_slot_info(machine_id: str, slot_id: str) -> dict:
             "price": inv.price if inv.price is not None else prod.price,
             "stock": inv.stock,
             "is_enabled": bool(inv.is_enabled),
-            "slot_type": inv.slot_type
+            "slot_type": inv.slot_type,
+                    "image_base64": inv.image_base64
         }
 
 
@@ -283,3 +317,21 @@ def admin_sales() -> dict:
         "weekly_total": 870.0,
         "monthly_total": 3410.3,
     }
+
+
+@app.patch("/api/v1/machines/{machine_id}/inventory/{slot}/decrement")
+def decrement_stock(machine_id: str, slot: str) -> dict:
+    with SessionLocal() as db:
+        item = db.query(Inventory).filter(
+            (Inventory.machine_id == machine_id) & 
+            ((Inventory.id == slot) | (Inventory.slot == slot))
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Inventory not found")
+        
+        if item.stock > 0:
+            item.stock -= 1
+            db.commit()
+            return {"status": "decremented", "new_stock": item.stock}
+        else:
+            return {"status": "empty", "new_stock": 0}

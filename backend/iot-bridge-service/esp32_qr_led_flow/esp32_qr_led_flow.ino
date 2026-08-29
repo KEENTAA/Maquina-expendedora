@@ -7,6 +7,13 @@
 #include <Preferences.h> // MEMORIA PERMANENTE
 
 // ═══════════════════════════════════════════════════
+// ── FLAGS DE PRUEBA Y DIAGNÓSTICO (CONFIGURACIÓN) ──
+// Cambia a true o false según lo que desees activar:
+const bool TEST_COMM_PICO_ENABLED = false;  // false: modo producción (sin pings continuos de test)
+const bool ENABLE_TEMP_READING     = true;   // true: lee y reporta temperatura DHT11 en TFT y telemetría
+// ═══════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════
 // ARQUITECTURA DE MICROPROCESADORES:
 //   ESP32 #1 (este) → TFT + Keypad + WiFi + QR (MAESTRO)
 //   ESP32 #2        → Motores PAP          (ESCLAVO MOTORES)  Serial2 (RX=16, TX=17)
@@ -27,28 +34,21 @@ byte rowPins[ROWS] = {26, 25, 33, 32};
 byte colPins[COLS] = {13, 12, 14, 27};
 Keypad keypad = Keypad(makeKeymap(keys), colPins, rowPins, ROWS, COLS);
 
-#ifndef LED_BUILTIN
-#define LED_BUILTIN 2
-#endif
-const int LED_PIN = LED_BUILTIN;
+// GPIO 21 = TFT_DC (User_Setup.h) → GPIO 2 queda libre para LED/Relé de luces:
+const int LED_PIN = 2;
 
 // ─── DATOS DE SENSORES (recibidos del Pico WH por Serial) ────────────────────
 // Protocolo: líneas de texto terminadas en '\n'
 //   NFC:<uid_hex>   → tarjeta detectada
-//   DIST:<cm>       → distancia del HC-SR04
-//   TEMP:<celsius>  → temperatura del DHT11
-// ─────────────────────────────────────────────────────────────────────────────
-// UART con Pico WH: RX=GPIO3, TX=GPIO1  (Serial — no usar Serial0 para debug)
-// NOTA: si necesitas debug por USB usa Serial0 (GPIO3/1) solo para Pico WH
-//       y usa Serial (USB-CDC) solo para logs en desarrollo.
-#define PICO_UART_RX 3
-#define PICO_UART_TX 1
-HardwareSerial PicoSerial(2); // Usamos Serial2 renombrado para el Pico
-// IMPORTANTE: Serial2 ya se usa para motores (RX=16, TX=17).
-// Usaremos Serial1 para el Pico WH: RX=GPIO9, TX=GPIO10
-// (Ajusta los pines si hay conflicto con tu PCB)
-HardwareSerial MotorSerial(2); // Serial2 → ESP32 esclavo de motores (RX=16, TX=17)
-HardwareSerial PicoWH(1);     // Serial1 → Pico WH sensores       (RX=9,  TX=10)
+// ─── PINES UART EN ESP32 MAESTRO ─────────────────────────────────────────────
+// Serial2 → ESP32 Esclavo de Motores (RX=16, TX=17) [Fijo e intacto]
+#define MOTOR_UART_RX 16
+#define MOTOR_UART_TX 17
+
+// Serial1 → Raspberry Pi Pico WH (Sensores) en pines libres y seguros (RX=19, TX=22)
+#define PICO_UART_RX 19
+#define PICO_UART_TX 22
+HardwareSerial PicoWH(1); // Serial1 -> Pico WH sensores (RX=GPIO19, TX=GPIO22)
 
 String picoUartBuf = "";       // Buffer para parsear líneas del Pico WH
 float picoTemperatura = -99.0; // Última temperatura recibida del Pico WH
@@ -160,6 +160,54 @@ void mostrarTeclaEnPantalla(char key) {
 }
 
 /**
+ * Prueba de comunicación TX/RX bidireccional con la Raspberry Pi Pico WH.
+ * Se ejecuta si TEST_COMM_PICO_ENABLED está en true.
+ */
+void probarComunicacionPicoWH() {
+  if (!TEST_COMM_PICO_ENABLED) {
+    Serial.println("[TEST-UART] Prueba con Pico WH deshabilitada (TEST_COMM_PICO_ENABLED = false).");
+    return;
+  }
+
+  Serial.println("\n========================================================");
+  Serial.println("[TEST-UART] === PRUEBA DE COMUNICACIÓN CON PICO WH ===");
+  Serial.println("[TEST-UART] Enviando 'PING' por Serial1 (TX=GPIO22, RX=GPIO19)...");
+  
+  // Limpiar buffer
+  while (PicoWH.available()) PicoWH.read();
+
+  PicoWH.println("PING");
+  unsigned long start = millis();
+  bool pongRecibido = false;
+  String respuesta = "";
+
+  while (millis() - start < 1500) {
+    if (PicoWH.available()) {
+      char c = PicoWH.read();
+      if (c == '\n') {
+        respuesta.trim();
+        if (respuesta == "PONG") {
+          pongRecibido = true;
+          break;
+        }
+        respuesta = "";
+      } else {
+        respuesta += c;
+      }
+    }
+    delay(5);
+  }
+
+  if (pongRecibido) {
+    Serial.println("[TEST-UART] >>> [OK] ¡ÉXITO! Recibido 'PONG' de Pico WH. TX/RX operando correctamente. <<<");
+  } else {
+    Serial.println("[TEST-UART] >>> [FALLO / TIMEOUT] No se recibió 'PONG' del Pico WH.");
+    Serial.println("[TEST-UART] Verificar: 1) RX Pico(GP5) <-> TX ESP32(GPIO22). 2) TX Pico(GP4) <-> RX ESP32(GPIO19). 3) GND común.");
+  }
+  Serial.println("========================================================\n");
+}
+
+/**
  * Procesa mensajes entrantes del Pico WH (sensores) por PicoWH (Serial1).
  * Protocolo: "NFC:<uid>\n" | "DIST:<cm>\n" | "TEMP:<C>\n" | "PONG\n"
  * Llama esto en cada iteración del loop().
@@ -173,14 +221,18 @@ void procesarPicoWH() {
         picoDistancia = picoUartBuf.substring(5).toFloat();
         Serial.printf("[PICO] Distancia: %.1f cm\n", picoDistancia);
       } else if (picoUartBuf.startsWith("TEMP:")) {
-        picoTemperatura = picoUartBuf.substring(5).toFloat();
-        Serial.printf("[PICO] Temperatura: %.1f C\n", picoTemperatura);
+        if (ENABLE_TEMP_READING) {
+          picoTemperatura = picoUartBuf.substring(5).toFloat();
+          Serial.printf("[PICO] Temperatura: %.1f C\n", picoTemperatura);
+        } else {
+          Serial.println("[PICO] Temperatura recibida pero ignorada (ENABLE_TEMP_READING = false).");
+        }
       } else if (picoUartBuf.startsWith("NFC:")) {
         picoNfcUid = picoUartBuf.substring(4);
         Serial.printf("[PICO] NFC UID: %s\n", picoNfcUid.c_str());
         // TODO: aqui puedes autenticar el UID contra el backend
-      } else if (picoUartBuf == "PONG") {
-        Serial.println("[PICO] PONG recibido (Pico WH vivo)");
+      } else if (picoUartBuf.indexOf("PONG") != -1) {
+        Serial.println("[PICO] >>> ¡PONG RECIBIDO! Pico WH responde correctamente. <<<");
       }
       picoUartBuf = "";
     } else {
@@ -545,12 +597,15 @@ void connectWifi() {
 
 void setup() {
   Serial.begin(115200);
-  // Inicializar Serial2 para el Esclavo de Motores (RX=16, TX=17)
+  // Inicializar Serial2 para el Esclavo de Motores (RX=16, TX=17) [Fijo para Motores]
   Serial2.begin(9600, SERIAL_8N1, 16, 17); 
-  // Inicializar Serial1 para el Pico WH de Sensores (RX=9, TX=10)
-  PicoWH.begin(9600, SERIAL_8N1, 9, 10);
+  // Inicializar Serial1 para Pico WH de Sensores en pines seguros (RX=19, TX=22)
+  PicoWH.begin(9600, SERIAL_8N1, 19, 22);
   delay(1000);
   Serial.println("--- MASTER INICIADO ---");
+
+  // Test de comunicación con Pico WH (si TEST_COMM_PICO_ENABLED es true)
+  probarComunicacionPicoWH();
 
   pinMode(LED_PIN, OUTPUT);
   
@@ -607,17 +662,37 @@ void loop() {
 
   if (now - lastTelemetry >= TELEMETRY_INTERVAL_MS) {
     lastTelemetry = now;
+    if (TEST_COMM_PICO_ENABLED) {
+      Serial.println("[TEST-UART] Enviando 'PING' periódico a Pico WH por Serial1...");
+      PicoWH.println("PING");
+    }
     enviarTelemetria();
     dibujarMonitores(picoTemperatura);
   }
 
-  if (waitingForPayment && (now - lastPoll >= POLL_INTERVAL_MS)) {
+  // Polling continuo de pagos pendientes (Para NFC y código QR)
+  if (now - lastPoll >= POLL_INTERVAL_MS) {
     lastPoll = now;
     if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient http; http.begin(baseUrl() + "/api/v1/machines/" + MACHINE_ID + "/next-paid");
+      HTTPClient http; 
+      http.begin(baseUrl() + "/api/v1/machines/" + MACHINE_ID + "/next-paid");
       if (http.GET() == 200) {
         String res = http.getString();
-        if (res.indexOf("\"tx_id\":\"") != -1) processPaidTransaction(extractTxId(res));
+        if (res.indexOf("\"tx_id\":\"") != -1) {
+          String txId = extractTxId(res);
+          // Intentar extraer product_id del JSON (ej: {"item":{"tx_id":"...","product_id":"A1"}})
+          int pIdPos = res.indexOf("\"product_id\":\"");
+          if (pIdPos != -1) {
+            int start = pIdPos + 14;
+            String slot = res.substring(start, res.indexOf("\"", start));
+            if (slot.length() > 0) inputCodigo = slot;
+          }
+          if (inputCodigo.length() > 0) {
+            processPaidTransaction(txId);
+          } else {
+            Serial.println("[ERROR] Pago recibido pero no hay product_id ni inputCodigo!");
+          }
+        }
       }
       http.end();
     }

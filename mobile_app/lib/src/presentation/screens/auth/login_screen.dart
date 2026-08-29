@@ -6,7 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../../../core/config/app_config.dart';
 import '../../controllers/auth_controller.dart';
-import '../dashboard/dashboard_screen.dart';
+import '../dashboard/main_layout_screen.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -23,7 +23,9 @@ class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
 
   final LocalAuthentication _localAuth = LocalAuthentication();
-  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
 
   bool _rememberPassword = false;
   bool _fingerprintAvailable = false;
@@ -48,7 +50,7 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (_) {}
 
     final fingerEnabled = prefs.getBool('fingerprint_enabled') ?? false;
-    final hasCreds = savedEmail != null && savedPassword != null;
+    final hasCreds = savedEmail != null && savedPassword != null && savedPassword.isNotEmpty;
 
     if (mounted) {
       setState(() {
@@ -57,9 +59,11 @@ class _LoginScreenState extends State<LoginScreen> {
         _hasSavedCredentials = hasCreds;
 
         if (hasCreds) {
-          _emailCtrl.text = savedEmail!;
-          _passwordCtrl.text = savedPassword!;
+          _emailCtrl.text = savedEmail;
+          _passwordCtrl.text = savedPassword;
           _rememberPassword = true;
+        } else if (savedEmail != null && savedEmail.isNotEmpty) {
+          _emailCtrl.text = savedEmail;
         }
         if (savedIp != null) {
           _ipCtrl.text = savedIp;
@@ -87,19 +91,21 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
 
     if (ok) {
-      // Save or clear credentials based on checkbox
-      if (_rememberPassword) {
+      final prefs = await SharedPreferences.getInstance();
+      final isFingerEnabled = prefs.getBool('fingerprint_enabled') ?? false;
+
+      // Always save credentials if remember password is checked or fingerprint is enabled
+      if (_rememberPassword || isFingerEnabled || _fingerprintEnabled) {
         await _secureStorage.write(key: 'saved_email', value: _emailCtrl.text.trim());
         await _secureStorage.write(key: 'saved_password', value: _passwordCtrl.text.trim());
         await _secureStorage.write(key: 'saved_ip', value: _ipCtrl.text.trim());
       } else {
-        await _secureStorage.delete(key: 'saved_email');
         await _secureStorage.delete(key: 'saved_password');
-        await _secureStorage.delete(key: 'saved_ip');
       }
 
+      if (!mounted) return;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const DashboardScreen()),
+        MaterialPageRoute(builder: (_) => const MainLayoutScreen()),
       );
       return;
     }
@@ -113,33 +119,76 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _loginWithFingerprint() async {
-    try {
-      final authenticated = await _localAuth.authenticate(
-        localizedReason: 'Escanea tu huella dactilar para iniciar sesión',
-        biometricOnly: true,
-        persistAcrossBackgrounding: true,
-      );
+    final savedEmail = await _secureStorage.read(key: 'saved_email');
+    final savedPassword = await _secureStorage.read(key: 'saved_password');
+    final savedIp = await _secureStorage.read(key: 'saved_ip');
 
-      if (!authenticated) return;
+    // Case 1: Credentials already saved
+    if (savedEmail != null && savedPassword != null && savedPassword.isNotEmpty) {
+      try {
+        final authenticated = await _localAuth.authenticate(
+          localizedReason: 'Escanea tu huella dactilar para iniciar sesión',
+          biometricOnly: true,
+          persistAcrossBackgrounding: true,
+        );
 
-      final savedEmail = await _secureStorage.read(key: 'saved_email');
-      final savedPassword = await _secureStorage.read(key: 'saved_password');
-      final savedIp = await _secureStorage.read(key: 'saved_ip');
+        if (!authenticated) return;
 
-      if (savedEmail != null && savedPassword != null) {
         setState(() {
           _emailCtrl.text = savedEmail;
           _passwordCtrl.text = savedPassword;
           if (savedIp != null) _ipCtrl.text = savedIp;
         });
         await _submit();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error al verificar huella: $e'), backgroundColor: Colors.red),
+          );
+        }
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      return;
+    }
+
+    // Case 2: Credentials are typed right now in the input fields
+    if (_emailCtrl.text.trim().isNotEmpty && _passwordCtrl.text.trim().isNotEmpty) {
+      try {
+        final authenticated = await _localAuth.authenticate(
+          localizedReason: 'Escanea tu huella para vincular tu cuenta e iniciar sesión',
+          biometricOnly: true,
+          persistAcrossBackgrounding: true,
         );
+
+        if (!authenticated) return;
+
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('fingerprint_enabled', true);
+        setState(() {
+          _fingerprintEnabled = true;
+          _rememberPassword = true;
+        });
+
+        await _submit();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error al verificar huella: $e'), backgroundColor: Colors.red),
+          );
+        }
       }
+      return;
+    }
+
+    // Case 3: Inputs are empty and no saved credentials
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Ingresa tu correo y contraseña en los campos y luego presiona "Iniciar sesión" o el botón de huella para vincularlos.'),
+          backgroundColor: Color(0xFF4F46E5),
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 4),
+        ),
+      );
     }
   }
 
@@ -147,7 +196,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     final auth = context.watch<AuthController>();
     final theme = Theme.of(context);
-    final showFingerprintButton = _fingerprintAvailable && _fingerprintEnabled && _hasSavedCredentials;
+    final showFingerprintButton = _fingerprintEnabled || _hasSavedCredentials || _fingerprintAvailable;
 
     return Scaffold(
       backgroundColor: Colors.white,

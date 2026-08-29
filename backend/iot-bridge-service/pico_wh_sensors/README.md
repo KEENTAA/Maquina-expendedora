@@ -9,7 +9,7 @@ Para cargar el código en tu **Raspberry Pi Pico WH**:
 5. Guárdalo dentro de la Raspberry Pi Pico con el nombre **`main.py`** para que arranque de forma autónoma al encenderse la máquina.
 
 ### Cableado resumen:
-- **UART al ESP32 Maestro**: `GP4` (TX) -> RX (GPIO 9 en ESP32), `GP5` (RX) -> TX (GPIO 10 en ESP32), `GND` común.
+- **UART al ESP32 Maestro**: `GP4` (TX) -> RX (GPIO 19 en ESP32 Maestro), `GP5` (RX) -> TX (GPIO 22 en ESP32 Maestro), `GND` común.
 - **PN532 NFC (I2C)**: `GP6` (SDA), `GP7` (SCL), `3.3V`, `GND`.
 - **HC-SR04**: `GP8` (TRIG), `GP9` (ECHO con divisor resistivo si usa 5V), `VCC`, `GND`.
 - **DHT11**: `GP10` (DATA), `3.3V`, `GND`.

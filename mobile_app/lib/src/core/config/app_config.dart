@@ -1,5 +1,5 @@
 class AppConfig {
-  static String _baseUrl = 'http://10.0.2.2';
+  static String _baseUrl = 'http://68.211.144.177';
 
   static String get baseUrl => _baseUrl;
 

@@ -1,3 +1,5 @@
+import 'package:image_picker/image_picker.dart';
+import 'dart:convert';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -227,7 +229,7 @@ class _AdminPanelTabState extends State<AdminPanelTab> {
                       subtitle: Text('Stock: ${item['stock']} | Precio: Bs. ${item['price']}'),
                       trailing: IconButton(
                         icon: const Icon(Icons.edit, color: Colors.blue),
-                        onPressed: () => _showPriceEditDialog(
+                        onPressed: () => _showEditSlotDialog(
                           controller,
                           machineId,
                           item['slot'],
@@ -245,7 +247,7 @@ class _AdminPanelTabState extends State<AdminPanelTab> {
     );
   }
 
-  void _showPriceEditDialog(
+  void _showEditSlotDialog(
     AdminDashboardController controller,
     String machineId,
     String slot,
@@ -253,17 +255,41 @@ class _AdminPanelTabState extends State<AdminPanelTab> {
     dynamic currentPrice,
   ) {
     final textController = TextEditingController(text: currentPrice.toString());
+    final picker = ImagePicker();
+    
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Editar Precio: $productName'),
-        content: TextField(
-          controller: textController,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(
-            labelText: 'Nuevo Precio (Bs.)',
-            border: OutlineInputBorder(),
-          ),
+        title: Text('Editar: $productName'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: textController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Nuevo Precio (Bs.)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: () async {
+                final file = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
+                if (file != null) {
+                  final bytes = await file.readAsBytes();
+                  final base64Image = base64Encode(bytes);
+                  if (mounted) {
+                    Navigator.pop(context);
+                    await controller.updateSlotImage(machineId, slot, base64Image);
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Foto actualizada')));
+                  }
+                }
+              },
+              icon: const Icon(Icons.photo_camera),
+              label: const Text('Cambiar foto de producto'),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -278,7 +304,7 @@ class _AdminPanelTabState extends State<AdminPanelTab> {
                 await controller.updatePrice(machineId, slot, newPrice);
               }
             },
-            child: const Text('Guardar'),
+            child: const Text('Guardar Precio'),
           ),
         ],
       ),

@@ -202,3 +202,28 @@ def telemetry(machine_id: str) -> dict:
 @app.post("/api/v1/iot/commands/{machine_id}/{command}")
 def command(machine_id: str, command: str) -> dict:
     return {"status": "queued", "machine_id": machine_id, "command": command, "mqtt_broker": MQTT_BROKER_URL}
+
+
+class NfcScanIn(BaseModel):
+    machine_id: str = "MACHINE-001"
+    uid: str
+    source: str = "PICO_WH"  # "PICO_WH", "ESP32_MASTER", o "MOBILE_APP"
+
+
+@app.post("/api/v1/iot/nfc/scan")
+def nfc_scan_event(req: NfcScanIn) -> dict:
+    print(f"\n=======================================================", flush=True)
+    print(f"📱 [NFC SCAN DETECTED] Dispositivo detectado!", flush=True)
+    print(f"   ➤ Máquina:  {req.machine_id}", flush=True)
+    print(f"   ➤ UID NFC:  {req.uid}", flush=True)
+    print(f"   ➤ Origen:   {req.source}", flush=True)
+    print(f"   ➤ Fecha:    {datetime.utcnow().isoformat()} UTC", flush=True)
+    print(f"=======================================================\n", flush=True)
+    return {
+        "status": "received",
+        "machine_id": req.machine_id,
+        "uid": req.uid,
+        "source": req.source,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+

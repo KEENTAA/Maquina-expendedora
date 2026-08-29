@@ -37,6 +37,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String)
     full_name: Mapped[str] = mapped_column(String)
     simupay_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    avatar_base64: Mapped[str | None] = mapped_column(String, nullable=True)
     role_id: Mapped[str] = mapped_column(ForeignKey("roles.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     role: Mapped[Role] = relationship(Role)
@@ -56,6 +57,8 @@ def _ensure_schema_compatibility() -> None:
             conn.execute(text("ALTER TABLE users ADD COLUMN simupay_email VARCHAR"))
         if "created_at" not in user_columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN created_at TIMESTAMP"))
+        if "avatar_base64" not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN avatar_base64 VARCHAR"))
 
 
 _ensure_schema_compatibility()
@@ -74,6 +77,8 @@ class LoginResponse(BaseModel):
     role: str
     email: str
     simupay_email: str | None = None
+    avatar_base64: str | None = None
+    full_name: str | None = None
 
 
 class RegisterRequest(BaseModel):
@@ -87,6 +92,12 @@ class LinkSimupayRequest(BaseModel):
     simupay_email: str
 
 
+class UpdateProfileRequest(BaseModel):
+    email: str
+    full_name: str | None = None
+    avatar_base64: str | None = None
+
+
 def _seed_if_needed() -> None:
     with SessionLocal() as db:
         if db.query(Role).count() == 0:
@@ -96,7 +107,6 @@ def _seed_if_needed() -> None:
             db.add_all([client_role, admin_role, devops_role])
             db.commit()
 
-            # Seed default users if empty
             if db.query(User).count() == 0:
                 db.add(
                     User(
@@ -150,7 +160,9 @@ def login(req: LoginRequest) -> LoginResponse:
             token_type="bearer",
             role=role,
             email=user.email,
-            simupay_email=user.simupay_email
+            simupay_email=user.simupay_email,
+            avatar_base64=user.avatar_base64,
+            full_name=user.full_name
         )
 
 
@@ -176,8 +188,6 @@ async def register(req: RegisterRequest) -> LoginResponse:
         )
         db.add(user)
         db.commit()
-
-        # NO LLAMAR A SIMUPAY AQUÍ. La vinculación es manual después.
         
         token = jwt.encode(
             {
@@ -188,7 +198,13 @@ async def register(req: RegisterRequest) -> LoginResponse:
             JWT_SECRET,
             algorithm=JWT_ALG,
         )
-        return LoginResponse(access_token=token, token_type="bearer", role=role.name, email=user.email)
+        return LoginResponse(
+            access_token=token, 
+            token_type="bearer", 
+            role=role.name, 
+            email=user.email,
+            full_name=user.full_name
+        )
 
 
 @app.post("/api/v1/auth/link-simupay")
@@ -203,8 +219,31 @@ def link_simupay(req: LinkSimupayRequest) -> dict:
         return {"status": "ok", "simupay_email": user.simupay_email}
 
 
+@app.put("/api/v1/auth/profile")
+def update_profile(req: UpdateProfileRequest) -> dict:
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == req.email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if req.full_name is not None:
+            user.full_name = req.full_name
+        if req.avatar_base64 is not None:
+            user.avatar_base64 = req.avatar_base64
+            if req.avatar_base64 == "":
+                user.avatar_base64 = None
+                
+        db.commit()
+        return {
+            "status": "ok", 
+            "email": user.email,
+            "full_name": user.full_name,
+            "avatar_base64": user.avatar_base64
+        }
+
+
 @app.get("/api/v1/users")
 def list_users() -> dict:
     with SessionLocal() as db:
         users = db.query(User).all()
-        return {"users": [{"email": u.email, "role": u.role.name, "name": u.full_name, "simupay_email": u.simupay_email} for u in users]}
+        return {"users": [{"email": u.email, "role": u.role.name, "name": u.full_name, "simupay_email": u.simupay_email, "avatar_base64": u.avatar_base64} for u in users]}

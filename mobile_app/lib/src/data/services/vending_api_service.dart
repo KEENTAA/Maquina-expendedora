@@ -45,4 +45,20 @@ class VendingApiService {
       body: {'url': url},
     );
   }
+
+  Future<Map<String, dynamic>> updateSlotImage(String machineId, String slotOrId, String imageBase64) {
+    return _http.patchJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/$machineId/inventory/$slotOrId/image'),
+      body: {'image_base64': imageBase64},
+    );
+  }
+
+
+  Future<Map<String, dynamic>> updateInventoryStock(String inventoryId, int stock) {
+    return _http.patchJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/inventory/$inventoryId'),
+      body: {'stock': stock, 'capacity': 20}, // Assuming capacity is 20
+    );
+  }
+
 }

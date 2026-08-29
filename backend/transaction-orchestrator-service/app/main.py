@@ -259,6 +259,13 @@ async def dispense_result(tx_id: str, req: DispenseResultRequest) -> Transaction
                     # Capturar el pago si el despacho fue exitoso
                     await client.post(f"{SIMUPAY_INTEGRATION_URL}/api/v1/payments/{tx.payment_reference}/capture", timeout=10.0)
                     tx.state = TransactionState.COMPLETED.value
+                    
+                    # Reducir el stock del slot
+                    try:
+                        await client.patch(f"{VENDING_SERVICE_URL}/api/v1/machines/{tx.machine_id}/inventory/{tx.slot_id}/decrement", timeout=5.0)
+                        print(f"Decremented stock for {tx.machine_id} slot {tx.slot_id}")
+                    except Exception as e:
+                        print(f"Failed to decrement stock: {e}")
                 elif should_refund:
                     # Reembolsar si el despacho falló
                     print(f"DISPENSE FAILURE: Requesting refund for tx {tx.id}")
@@ -312,7 +319,7 @@ async def get_slot_info(machine_id: str, slot_id: str):
 def next_paid(machine_id: str) -> dict:
     with SessionLocal() as db:
         tx = db.query(Transaction).filter(Transaction.machine_id == machine_id, Transaction.state == TransactionState.PAID_PENDING_DISPENSE.value).first()
-        return {"item": {"tx_id": tx.id} if tx else None}
+        return {"item": {"tx_id": tx.id, "product_id": tx.product_id} if tx else None}
 
 @app.get("/api/v1/transactions")
 def list_tx() -> dict:

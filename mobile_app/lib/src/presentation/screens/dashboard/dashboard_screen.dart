@@ -8,7 +8,14 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'package:nfc_manager/ndef_record.dart';
+import 'package:nfc_manager/nfc_manager.dart';
+import 'package:nfc_manager/nfc_manager_android.dart';
+import 'package:nfc_manager/nfc_manager_ios.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../../../core/config/app_config.dart';
+import '../../../data/services/vending_api_service.dart';
 import '../../controllers/auth_controller.dart';
 import '../../controllers/profile_controller.dart';
 import '../../controllers/purchase_controller.dart';
@@ -17,6 +24,7 @@ import '../../controllers/admin_dashboard_controller.dart';
 import '../auth/login_screen.dart';
 import '../purchase/payment_confirmation_screen.dart';
 import '../purchase/qr_scanner_screen.dart';
+import '../purchase/nfc_vending_screen.dart';
 import '../profile/profile_screen.dart';
 import '../wallet/history_screen.dart';
 import '../wallet/transfer_screen.dart';
@@ -27,6 +35,20 @@ import 'admin_panel_tab.dart';
 import 'devops_panel_tab.dart';
 import '../settings/settings_screen.dart';
 
+// Cache to prevent jank when scrolling tabs
+final Map<String, Uint8List> _base64Cache = {};
+
+Uint8List _getDecodedBytes(String base64Str) {
+  if (_base64Cache.containsKey(base64Str)) {
+    return _base64Cache[base64Str]!;
+  }
+  final bytes = base64Decode(base64Str);
+  if (_base64Cache.length > 50) _base64Cache.clear(); // simple eviction
+  _base64Cache[base64Str] = bytes;
+  return bytes;
+}
+
+
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
@@ -36,22 +58,158 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   StreamSubscription<Uri>? _linkSubscription;
-  int _tabIndex = 0;
+
+  final VendingApiService _vendingApi = VendingApiService();
+  bool _nfcListening = false;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _load();
+      _initNfcListener();
+      _checkInitialLink();
+    });
     _linkSubscription = AppLinks().uriLinkStream.listen((uri) {
-      if (uri.scheme == 'grog' &&
-          uri.host == 'wallet' &&
-          uri.path == '/callback') {
-        final linkedEmail = uri.queryParameters['email'];
-        _load(linkWallet: true, linkedEmail: linkedEmail);
-      }
+      _handleIncomingUri(uri);
     });
   }
 
+  Future<void> _checkInitialLink() async {
+    try {
+      final initialUri = await AppLinks().getInitialLink();
+      if (initialUri != null) {
+        _handleIncomingUri(initialUri);
+      }
+    } catch (_) {}
+  }
+
+  void _handleIncomingUri(Uri uri) {
+    if (uri.scheme == 'grog' && uri.host == 'wallet' && uri.path == '/callback') {
+      final linkedEmail = uri.queryParameters['email'];
+      _load(linkWallet: true, linkedEmail: linkedEmail);
+    } else if (uri.scheme == 'grog' && uri.host == 'vending') {
+      String machineId = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : 'MACHINE-001';
+      final token = uri.queryParameters['token'];
+      if (mounted) {
+        _showNfcMachinePanel(machineId, token: token);
+      }
+    }
+  }
+
+  Future<String?> _extractNfcPayload(NfcTag tag) async {
+    NdefMessage? message;
+    final ndefAndroid = NdefAndroid.from(tag);
+    if (ndefAndroid != null) {
+      message = ndefAndroid.cachedNdefMessage ?? await ndefAndroid.getNdefMessage();
+    } else {
+      final ndefIos = NdefIos.from(tag);
+      if (ndefIos != null) {
+        message = ndefIos.cachedNdefMessage ?? await ndefIos.readNdef();
+      }
+    }
+
+    if (message != null) {
+      for (final record in message.records) {
+        if (record.payload.isNotEmpty) {
+          try {
+            if (record.typeNameFormat == TypeNameFormat.wellKnown) {
+              final langCodeLen = record.payload.first & 0x3F;
+              if (record.payload.length > langCodeLen + 1) {
+                return utf8.decode(record.payload.sublist(langCodeLen + 1));
+              }
+            }
+            return utf8.decode(record.payload);
+          } catch (_) {}
+        }
+      }
+    }
+    return null;
+  }
+
+  Future<void> _initNfcListener() async {
+    final prefs = await SharedPreferences.getInstance();
+    final isNfcEnabled = prefs.getBool('nfc_enabled') ?? false;
+
+    if (!isNfcEnabled) {
+      if (_nfcListening) {
+        try {
+          await NfcManager.instance.stopSession();
+        } catch (_) {}
+        _nfcListening = false;
+      }
+      return;
+    }
+
+    if (_nfcListening) return;
+
+    try {
+      final isAvailable = await NfcManager.instance.isAvailable();
+      if (!isAvailable) return;
+
+      _nfcListening = true;
+      NfcManager.instance.startSession(
+        pollingOptions: {
+          NfcPollingOption.iso14443,
+          NfcPollingOption.iso15693,
+          NfcPollingOption.iso18092,
+        },
+        onDiscovered: (NfcTag tag) async {
+          try {
+            final payload = await _extractNfcPayload(tag);
+
+            if (payload != null && payload.trim().isNotEmpty) {
+              final cleanPayload = payload.trim();
+              String machineId = cleanPayload;
+              String? token;
+              if (cleanPayload.contains('/init/')) {
+                final parts = cleanPayload.split('/init/');
+                machineId = parts.last.split('?').first.trim();
+              } else if (cleanPayload.startsWith('grog://vending/')) {
+                final uri = Uri.tryParse(cleanPayload);
+                if (uri != null) {
+                  machineId = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : 'MACHINE-001';
+                  token = uri.queryParameters['token'];
+                } else {
+                  machineId = cleanPayload.replaceFirst('grog://vending/', '').split('?').first.trim();
+                }
+              } else if (cleanPayload.contains('machine_id=')) {
+                final uri = Uri.tryParse(cleanPayload);
+                if (uri != null && uri.queryParameters.containsKey('machine_id')) {
+                  machineId = uri.queryParameters['machine_id']!;
+                  token = uri.queryParameters['token'];
+                }
+              }
+
+              if (machineId.isNotEmpty && mounted) {
+                _showNfcMachinePanel(machineId, token: token);
+              }
+            }
+          } catch (e) {
+            debugPrint('Error decodificando NFC: $e');
+          }
+        },
+      ).catchError((e) {
+        _nfcListening = false;
+        debugPrint('Error en sesión NFC: $e');
+      });
+    } catch (e) {
+      _nfcListening = false;
+      debugPrint('NFC no disponible: $e');
+    }
+  }
+
+  Future<void> _showNfcMachinePanel(String machineId, {String? token}) async {
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => NfcVendingScreen(
+          machineId: machineId,
+          token: token,
+        ),
+      ),
+    );
+  }
   Future<void> _load({bool linkWallet = false, String? linkedEmail}) async {
     final auth = context.read<AuthController>();
     final profile = context.read<ProfileController>();
@@ -83,6 +241,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void dispose() {
     _linkSubscription?.cancel();
+    if (_nfcListening) {
+      NfcManager.instance.stopSession().catchError((_) {});
+    }
     super.dispose();
   }
 
@@ -115,10 +276,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           actions: [
-            IconButton(
-              onPressed: _load,
-              icon: const Icon(Icons.refresh, color: Colors.black54),
-            ),
             Consumer<NotificationController>(
               builder: (context, ctrl, _) => Stack(
                 alignment: Alignment.center,
@@ -159,38 +316,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ],
               ),
             ),
-            IconButton(
-              onPressed: () {
-                Navigator.of(
-                  context,
-                ).push(
-                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
-                );
-              },
-              icon: const Icon(Icons.person_outline, color: Colors.black54),
-            ),
-            IconButton(
-              onPressed: () {
-                Navigator.of(
-                  context,
-                ).push(
-                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                );
-              },
-              icon: const Icon(Icons.settings_outlined, color: Colors.black54),
-            ),
-            IconButton(
-              onPressed: () async {
-                await auth.logout();
-                if (!context.mounted) return;
-                Navigator.of(context).pushAndRemoveUntil(
-                  MaterialPageRoute(builder: (_) => const LoginScreen()),
-                  (_) => false,
-                );
-              },
-              icon: const Icon(Icons.logout, color: Colors.redAccent),
-            ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 16),
           ],
           bottom:
               isAdmin
@@ -305,35 +431,74 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       final isEnabled = item['is_enabled'] ?? true;
                       final type = item['slot_type'] ?? 'soda';
 
+                      int stock = item['stock'] ?? 0;
+                      bool realEnabled = isEnabled && stock > 0;
+                      
+                      Widget imageWidget;
+                      if (item['image_base64'] != null && item['image_base64'].toString().isNotEmpty) {
+                        imageWidget = ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.memory(
+                            _getDecodedBytes(item['image_base64']),
+                            width: 38,
+                            height: 38,
+                            fit: BoxFit.cover,
+                            gaplessPlayback: true,
+                          ),
+                        );
+                      } else {
+                        imageWidget = Icon(
+                          type == 'soda' ? Icons.local_drink : Icons.fastfood,
+                          color: realEnabled ? const Color(0xFF4F46E5) : Colors.grey,
+                          size: 32,
+                        );
+                      }
+                      
+                      if (!realEnabled) {
+                         imageWidget = ColorFiltered(
+                           colorFilter: const ColorFilter.matrix([
+                             0.2126, 0.7152, 0.0722, 0, 0,
+                             0.2126, 0.7152, 0.0722, 0, 0,
+                             0.2126, 0.7152, 0.0722, 0, 0,
+                             0,      0,      0,      1, 0,
+                           ]),
+                           child: imageWidget,
+                         );
+                      }
+
                       return InkWell(
                         onTap: () => _showEditSlotDialog(context, controller, machineId, item),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: isEnabled ? Colors.white : Colors.grey[100],
-                            borderRadius: BorderRadius.circular(16),
-                            boxShadow: [
-                              BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))
-                            ],
-                            border: Border.all(
-                              color: isEnabled ? const Color(0xFF4F46E5).withOpacity(0.3) : Colors.red.withOpacity(0.3),
-                              width: 2,
-                            ),
-                          ),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                type == 'soda' ? Icons.local_drink : Icons.fastfood,
-                                color: isEnabled ? const Color(0xFF4F46E5) : Colors.grey,
-                                size: 28,
+                        child: Column(
+                          children: [
+                            Expanded(
+                              child: Container(
+                                width: double.infinity,
+                                decoration: BoxDecoration(
+                                  color: realEnabled ? Colors.white : Colors.grey[200],
+                                  borderRadius: BorderRadius.circular(16),
+                                  boxShadow: [
+                                    BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))
+                                  ],
+                                  border: Border.all(
+                                    color: realEnabled ? const Color(0xFF4F46E5).withOpacity(0.3) : Colors.red.withOpacity(0.3),
+                                    width: 2,
+                                  ),
+                                ),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    imageWidget,
+                                    const SizedBox(height: 6),
+                                    Text('Bs. ${item['price']}', style: const TextStyle(fontSize: 12, color: Colors.green, fontWeight: FontWeight.bold)),
+                                    if (!realEnabled)
+                                      const Text('AGOTADO', style: TextStyle(color: Colors.red, fontSize: 9, fontWeight: FontWeight.bold)),
+                                  ],
+                                ),
                               ),
-                              const SizedBox(height: 4),
-                              Text(item['slot'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                              Text('Bs. ${item['price']}', style: const TextStyle(fontSize: 10, color: Colors.green, fontWeight: FontWeight.bold)),
-                              if (!isEnabled)
-                                const Text('OFF', style: TextStyle(color: Colors.red, fontSize: 10, fontWeight: FontWeight.bold)),
-                            ],
-                          ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text('${item['slot']} | Disp: $stock', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                          ],
                         ),
                       );
                     },
@@ -349,8 +514,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _showEditSlotDialog(BuildContext context, AdminDashboardController controller, String machineId, dynamic item) {
     final priceController = TextEditingController(text: item['price'].toString());
+    final stockController = TextEditingController(text: (item['stock'] ?? 0).toString());
     bool isEnabled = item['is_enabled'] ?? true;
     String slotType = item['slot_type'] ?? 'soda';
+    final picker = ImagePicker();
 
     showDialog(
       context: context,
@@ -358,48 +525,73 @@ class _DashboardScreenState extends State<DashboardScreen> {
         builder: (context, setModalState) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           title: Text('Gestionar Slot ${item['slot']}'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: priceController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Precio (Bs.)', border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 16),
-              SwitchListTile(
-                title: const Text('Habilitado'),
-                value: isEnabled,
-                onChanged: (v) => setModalState(() => isEnabled = v),
-              ),
-              const Text('Tipo de Producto:'),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  ChoiceChip(
-                    label: const Text('Soda'),
-                    selected: slotType == 'soda',
-                    onSelected: (v) => setModalState(() => slotType = 'soda'),
-                  ),
-                  const SizedBox(width: 8),
-                  ChoiceChip(
-                    label: const Text('Snack'),
-                    selected: slotType == 'snack',
-                    onSelected: (v) => setModalState(() => slotType = 'snack'),
-                  ),
-                ],
-              ),
-            ],
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: priceController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'Precio (Bs.)', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: stockController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Cantidad en Stock', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 16),
+                SwitchListTile(
+                  title: const Text('Habilitado'),
+                  value: isEnabled,
+                  onChanged: (v) => setModalState(() => isEnabled = v),
+                ),
+                const Text('Tipo de Producto:'),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    ChoiceChip(
+                      label: const Text('Soda'),
+                      selected: slotType == 'soda',
+                      onSelected: (v) => setModalState(() => slotType = 'soda'),
+                    ),
+                    const SizedBox(width: 8),
+                    ChoiceChip(
+                      label: const Text('Snack'),
+                      selected: slotType == 'snack',
+                      onSelected: (v) => setModalState(() => slotType = 'snack'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final file = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
+                    if (file != null) {
+                      final bytes = await file.readAsBytes();
+                      final base64Image = base64Encode(bytes);
+                      if (context.mounted) {
+                        Navigator.pop(context);
+                        await controller.updateSlotImage(machineId, item['slot'], base64Image);
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Foto actualizada')));
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.photo_camera),
+                  label: const Text('Cambiar foto de producto'),
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
             ElevatedButton(
               onPressed: () async {
                 final price = double.tryParse(priceController.text);
-                if (price != null) {
+                final stock = int.tryParse(stockController.text);
+                if (price != null && stock != null) {
                   Navigator.pop(context);
-                  await controller.updatePrice(machineId, item['slot'], price);
-                  await controller.updateSlotStatus(machineId, item['slot'], isEnabled, slotType);
+                  await controller.updateSlotDetails(machineId, item['slot'], item['inventory_id'], price, stock, isEnabled, slotType);
                 }
               },
               child: const Text('Guardar'),
@@ -441,7 +633,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildAdminBannerTab(BuildContext context) {
     final controller = context.watch<AdminDashboardController>();
     final bannerUrl = controller.banner['url'] ?? '';
-    final urlController = TextEditingController(text: bannerUrl);
 
     return ListView(
       padding: const EdgeInsets.all(24),
@@ -454,8 +645,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             borderRadius: BorderRadius.circular(20),
             child: bannerUrl.startsWith('data:') 
               ? Image.memory(
-                  base64Decode(bannerUrl.split(',').last),
+                  _getDecodedBytes(bannerUrl.split(',').last),
                   height: 120, width: double.infinity, fit: BoxFit.cover,
+                  gaplessPlayback: true,
                 )
               : Image.network(bannerUrl, height: 120, width: double.infinity, fit: BoxFit.cover),
           )
@@ -466,16 +658,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: const Center(child: Text('No hay imagen configurada')),
           ),
         const SizedBox(height: 24),
-        TextField(
-          controller: urlController,
+        TextFormField(
+          initialValue: bannerUrl,
           decoration: const InputDecoration(labelText: 'URL de la imagen', border: OutlineInputBorder()),
+          onChanged: (value) => controller.banner['url'] = value,
         ),
         const SizedBox(height: 16),
         Row(
           children: [
             Expanded(
               child: ElevatedButton.icon(
-                onPressed: () => controller.updateBanner(urlController.text),
+                onPressed: () => controller.updateBanner(controller.banner['url'] ?? ''),
                 icon: const Icon(Icons.link),
                 label: const Text('Usar URL'),
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4F46E5), foregroundColor: Colors.white),
@@ -965,7 +1158,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     borderRadius: BorderRadius.circular(20),
                     child: bannerUrl.startsWith('data:')
                       ? Image.memory(
-                          base64Decode(bannerUrl.split(',').last),
+                          _getDecodedBytes(bannerUrl.split(',').last),
                           height: 100, width: double.infinity, fit: BoxFit.cover,
                         )
                       : Image.network(

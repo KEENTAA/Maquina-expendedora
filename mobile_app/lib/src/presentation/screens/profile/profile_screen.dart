@@ -7,6 +7,8 @@ import 'package:provider/provider.dart';
 
 import '../../controllers/auth_controller.dart';
 import '../../controllers/profile_controller.dart';
+import '../settings/settings_screen.dart';
+import '../auth/login_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -115,6 +117,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       );
                     },
                     child: const Text('Guardar cambios'),
+                  ),
+                  const SizedBox(height: 20),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.settings, color: Colors.black54),
+                    title: const Text('Configuración (Huella y NFC)'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      );
+                    },
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.logout, color: Colors.redAccent),
+                    title: const Text('Cerrar Sesión', style: TextStyle(color: Colors.redAccent)),
+                    onTap: () async {
+                      await context.read<AuthController>().logout();
+                      if (!context.mounted) return;
+                      Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute(builder: (_) => const LoginScreen()),
+                        (_) => false,
+                      );
+                    },
                   ),
                 ],
               ),

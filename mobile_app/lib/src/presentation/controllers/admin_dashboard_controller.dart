@@ -91,6 +91,31 @@ class AdminDashboardController extends ChangeNotifier {
     }
   }
 
+  Future<void> updateSlotDetails(String machineId, String slot, String inventoryId, double newPrice, int newStock, bool isEnabled, String? slotType) async {
+    loading = true;
+    error = null;
+    notifyListeners();
+
+    try {
+      await _vendingApi.updateInventoryPrice(machineId, slot, newPrice);
+      await _vendingApi.updateSlotStatus(machineId, slot, isEnabled, slotType);
+      
+      // Need to find the inventory id or use slot. The API takes inventory_id. 
+      // But we only have slot! Wait, let's look at the API. The API is /api/v1/inventory/{inventory_id}
+      // Or does _vendingApi have updateStock? Let's implement updateInventoryStock in VendingApiService!
+      await _vendingApi.updateInventoryStock(inventoryId, newStock);
+
+      await _api.refreshConfig(machineId);
+      final inventoryData = await _vendingApi.getInventory(machineId);
+      inventories[machineId] = inventoryData['items'] ?? [];
+    } catch (e) {
+      error = e.toString();
+    } finally {
+      loading = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> updatePrice(String machineId, String slot, double newPrice) async {
     loading = true;
     error = null;
@@ -186,4 +211,17 @@ class AdminDashboardController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+  Future<void> updateSlotImage(String machineId, String slotOrId, String imageBase64) async {
+    try {
+      await _vendingApi.updateSlotImage(machineId, slotOrId, imageBase64);
+      final inv = await _vendingApi.getInventory(machineId);
+      inventories[machineId] = inv['items'] ?? [];
+      notifyListeners();
+    } catch (e) {
+      error = e.toString();
+      notifyListeners();
+    }
+  }
+
 }
