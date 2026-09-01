@@ -34,4 +34,17 @@ class NotificationApiService {
   void disconnect() {
     _channel?.sink.close();
   }
+  Future<Map<String, dynamic>> broadcastNotification(String title, String summary, String description, String type) {
+    return _http.postJson(
+      Uri.parse('${AppConfig.notificationUrl}/api/v1/notifications/broadcast'),
+      body: {
+        'user_email': 'all',
+        'title': title,
+        'summary': summary,
+        'description': description,
+        'type': type
+      },
+    );
+  }
+
 }

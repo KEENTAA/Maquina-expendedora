@@ -58,8 +58,12 @@ class _AdminPanelTabState extends State<AdminPanelTab> {
 
   Widget _buildTopSellersChart(Map<String, List<dynamic>> topSellers) {
     if (topSellers.isEmpty) return const SizedBox.shrink();
-    // Assuming one machine for now, simplify for UI demonstration
-    final data = topSellers.values.first; 
+    List<dynamic> allData = [];
+    for (var list in topSellers.values) {
+      allData.addAll(list);
+    }
+    allData.sort((a, b) => (b['count'] as num).compareTo(a['count'] as num));
+    final data = allData.take(5).toList(); 
     
     return Card(
       child: Padding(
@@ -84,8 +88,12 @@ class _AdminPanelTabState extends State<AdminPanelTab> {
 
   Widget _buildFailedSlotsChart(Map<String, List<dynamic>> failedSlots) {
     if (failedSlots.isEmpty) return const SizedBox.shrink();
-    // Assuming one machine for now
-    final data = failedSlots.values.first;
+    List<dynamic> allData = [];
+    for (var list in failedSlots.values) {
+      allData.addAll(list);
+    }
+    allData.sort((a, b) => (b['count'] as num).compareTo(a['count'] as num));
+    final data = allData.take(5).toList();
 
     return Card(
       child: Padding(

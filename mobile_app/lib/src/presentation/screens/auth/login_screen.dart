@@ -137,7 +137,10 @@ class _LoginScreenState extends State<LoginScreen> {
         setState(() {
           _emailCtrl.text = savedEmail;
           _passwordCtrl.text = savedPassword;
-          if (savedIp != null) _ipCtrl.text = savedIp;
+          // Only overwrite IP if it hasn't been modified by the user
+          // But actually, whatever is in _ipCtrl.text is what we should use, 
+          // because it defaults to savedIp anyway in initState!
+          // So we don't overwrite it here.
         });
         await _submit();
       } catch (e) {

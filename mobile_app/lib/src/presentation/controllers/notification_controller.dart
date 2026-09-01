@@ -10,6 +10,8 @@ class NotificationController extends ChangeNotifier {
   bool _loading = false;
   String? _error;
   StreamSubscription? _wsSubscription;
+  void Function(AppNotification)? onNewNotification;
+
 
   NotificationController({NotificationApiService? api})
     : _api = api ?? NotificationApiService();
@@ -46,6 +48,9 @@ class NotificationController extends ChangeNotifier {
       if (!_notifications.any((n) => n.id == newNotif.id)) {
         _notifications.insert(0, newNotif);
         notifyListeners();
+        if (onNewNotification != null) {
+          onNewNotification!(newNotif);
+        }
       }
     }, onError: (err) {
       debugPrint('Notification WebSocket Error: $err');

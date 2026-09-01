@@ -146,7 +146,9 @@ class SlotStatusRequest(BaseModel):
     slot_type: str | None = None
 
 class BannerRequest(BaseModel):
-    url: str
+    title: str
+    concept: str
+    image_base64: str
 
 
 @app.get("/health")
@@ -335,3 +337,19 @@ def decrement_stock(machine_id: str, slot: str) -> dict:
             return {"status": "decremented", "new_stock": item.stock}
         else:
             return {"status": "empty", "new_stock": 0}
+
+
+class LocationRequest(BaseModel):
+    latitude: float
+    longitude: float
+
+@app.patch("/api/v1/machines/{machine_id}/location")
+def update_machine_location(machine_id: str, req: LocationRequest) -> dict:
+    with SessionLocal() as db:
+        machine = db.get(Machine, machine_id)
+        if not machine:
+            raise HTTPException(status_code=404, detail="Machine not found")
+        machine.latitude = req.latitude
+        machine.longitude = req.longitude
+        db.commit()
+        return {"status": "ok", "latitude": machine.latitude, "longitude": machine.longitude}

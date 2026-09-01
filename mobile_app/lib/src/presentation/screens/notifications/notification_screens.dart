@@ -1,3 +1,5 @@
+import 'dart:convert';
+import '../../controllers/admin_dashboard_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../controllers/notification_controller.dart';
@@ -10,6 +12,12 @@ class NotificationListScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = context.watch<NotificationController>();
     final notifications = controller.notifications;
+    final adminController = context.watch<AdminDashboardController>();
+    final bannerTitle = adminController.banner['title'] ?? '';
+    final bannerConcept = adminController.banner['concept'] ?? '';
+    final bannerImage = adminController.banner['image_base64'] ?? '';
+    
+    final bool hasAd = bannerTitle.isNotEmpty || bannerConcept.isNotEmpty || bannerImage.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -38,9 +46,12 @@ class NotificationListScreen extends StatelessWidget {
               ),
             )
           : ListView.builder(
-              itemCount: notifications.length,
+              itemCount: notifications.length + (hasAd ? 1 : 0),
               itemBuilder: (context, index) {
-                final n = notifications[index];
+                if (hasAd && index == 0) {
+                   return _AdNotificationTile(title: bannerTitle, concept: bannerConcept, imageBase64: bannerImage);
+                }
+                final n = notifications[hasAd ? index - 1 : index];
                 return _NotificationTile(notification: n);
               },
             ),
@@ -195,5 +206,82 @@ class NotificationDetailScreen extends StatelessWidget {
 
   String _formatDate(DateTime date) {
     return '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}';
+  }
+}
+class _AdNotificationTile extends StatelessWidget {
+  final String title;
+  final String concept;
+  final String imageBase64;
+
+  const _AdNotificationTile({required this.title, required this.concept, required this.imageBase64});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      elevation: 4,
+      color: Colors.amber.shade50, // Color destacado
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.amber.shade200)),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: Colors.amber.withOpacity(0.2),
+          child: const Icon(Icons.star, color: Colors.orange),
+        ),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: Text(concept, maxLines: 2, overflow: TextOverflow.ellipsis),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => _AdDetailScreen(title: title, concept: concept, imageBase64: imageBase64),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _AdDetailScreen extends StatelessWidget {
+  final String title;
+  final String concept;
+  final String imageBase64;
+
+  const _AdDetailScreen({required this.title, required this.concept, required this.imageBase64});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Anuncio')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (imageBase64.isNotEmpty)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: Image.memory(
+                  base64Decode(imageBase64),
+                  width: double.infinity,
+                  height: 250,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                )
+              ),
+            const SizedBox(height: 24),
+            Text(
+              title,
+              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+            ),
+            const Divider(height: 32),
+            Text(
+              concept,
+              style: const TextStyle(fontSize: 18, height: 1.5),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

@@ -1,3 +1,4 @@
+import 'map_picker_screen.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -402,9 +403,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         icon: const Icon(Icons.bar_chart, color: Colors.orange),
                         onPressed: () => _showTopSellersDialog(context, controller, machineId),
                       ),
+                      Builder(builder: (context) {
+                        bool isLightOn = controller.machineLights[machineId] ?? false;
+                        return IconButton(
+                          icon: Icon(
+                            isLightOn ? Icons.lightbulb : Icons.lightbulb_outline,
+                            color: isLightOn ? Colors.yellow : Colors.grey,
+                            shadows: isLightOn ? [const BoxShadow(color: Colors.yellow, blurRadius: 10)] : null,
+                          ),
+                          onPressed: () => controller.toggleLights(machineId),
+                        );
+                      }),
                       IconButton(
-                        icon: const Icon(Icons.lightbulb_outline, color: Colors.amber),
-                        onPressed: () => controller.toggleLights(machineId),
+                        icon: const Icon(Icons.location_on, color: Colors.blue),
+                        onPressed: () async {
+                          final double lat = machine['lat'] != null ? double.tryParse(machine['lat'].toString()) ?? 0 : 0;
+                          final double lng = machine['lng'] != null ? double.tryParse(machine['lng'].toString()) ?? 0 : 0;
+                          
+                          final result = await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => MapPickerScreen(initialLat: lat, initialLng: lng),
+                            ),
+                          );
+                          
+                          if (result != null) {
+                            await controller.updateMachineLocation(machineId, result.latitude, result.longitude);
+                            if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ubicación guardada con éxito')));
+                            }
+                          }
+                        },
                       ),
                     ],
                   ),
@@ -440,9 +469,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           borderRadius: BorderRadius.circular(8),
                           child: Image.memory(
                             _getDecodedBytes(item['image_base64']),
-                            width: 38,
-                            height: 38,
-                            fit: BoxFit.cover,
+                            fit: BoxFit.contain,
                             gaplessPlayback: true,
                           ),
                         );
@@ -484,20 +511,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     width: 2,
                                   ),
                                 ),
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    imageWidget,
-                                    const SizedBox(height: 6),
-                                    Text('Bs. ${item['price']}', style: const TextStyle(fontSize: 12, color: Colors.green, fontWeight: FontWeight.bold)),
-                                    if (!realEnabled)
-                                      const Text('AGOTADO', style: TextStyle(color: Colors.red, fontSize: 9, fontWeight: FontWeight.bold)),
-                                  ],
+                                child: Padding(
+                                  padding: const EdgeInsets.all(4.0),
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Expanded(child: imageWidget),
+                                      const SizedBox(height: 2),
+                                      FittedBox(
+                                        fit: BoxFit.scaleDown,
+                                        child: Text('Bs. ${item['price']}', style: const TextStyle(fontSize: 12, color: Colors.green, fontWeight: FontWeight.bold)),
+                                      ),
+                                      if (!realEnabled)
+                                        const FittedBox(
+                                          fit: BoxFit.scaleDown,
+                                          child: Text('AGOTADO', style: TextStyle(color: Colors.red, fontSize: 9, fontWeight: FontWeight.bold)),
+                                        ),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
                             const SizedBox(height: 4),
-                            Text('${item['slot']} | Disp: $stock', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                            FittedBox(fit: BoxFit.scaleDown, child: Text('${item['slot']} | Disp: $stock', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold))),
                           ],
                         ),
                       );
@@ -632,66 +668,132 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildAdminBannerTab(BuildContext context) {
     final controller = context.watch<AdminDashboardController>();
-    final bannerUrl = controller.banner['url'] ?? '';
+    final bannerTitle = controller.banner['title'] ?? '';
+    final bannerConcept = controller.banner['concept'] ?? '';
+    final bannerImage = controller.banner['image_base64'] ?? '';
 
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
-        const Text('Banner Publicitario', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-        const Text('Este banner se mostrará a todos los clientes.', style: TextStyle(color: Colors.grey)),
+        const Text('Anuncio Fijo (Cartel)', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+        const Text('Aparece en la cima de las notificaciones siempre.', style: TextStyle(color: Colors.grey)),
         const SizedBox(height: 24),
-        if (bannerUrl.isNotEmpty)
+        
+        TextFormField(
+          initialValue: bannerTitle,
+          decoration: const InputDecoration(labelText: 'Título del Anuncio', border: OutlineInputBorder()),
+          onChanged: (value) => controller.banner['title'] = value,
+        ),
+        const SizedBox(height: 16),
+        
+        TextFormField(
+          initialValue: bannerConcept,
+          maxLines: 3,
+          decoration: const InputDecoration(labelText: 'Concepto / Descripción', border: OutlineInputBorder()),
+          onChanged: (value) => controller.banner['concept'] = value,
+        ),
+        const SizedBox(height: 24),
+
+        if (bannerImage.isNotEmpty)
           ClipRRect(
             borderRadius: BorderRadius.circular(20),
-            child: bannerUrl.startsWith('data:') 
-              ? Image.memory(
-                  _getDecodedBytes(bannerUrl.split(',').last),
-                  height: 120, width: double.infinity, fit: BoxFit.cover,
-                  gaplessPlayback: true,
-                )
-              : Image.network(bannerUrl, height: 120, width: double.infinity, fit: BoxFit.cover),
+            child: Image.memory(
+              _getDecodedBytes(bannerImage),
+              height: 150, width: double.infinity, fit: BoxFit.cover,
+              gaplessPlayback: true,
+            )
           )
         else
           Container(
             height: 120,
             decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(20)),
-            child: const Center(child: Text('No hay imagen configurada')),
+            child: const Center(child: Text('No hay imagen seleccionada')),
           ),
-        const SizedBox(height: 24),
-        TextFormField(
-          initialValue: bannerUrl,
-          decoration: const InputDecoration(labelText: 'URL de la imagen', border: OutlineInputBorder()),
-          onChanged: (value) => controller.banner['url'] = value,
-        ),
+        
         const SizedBox(height: 16),
-        Row(
-          children: [
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed: () => controller.updateBanner(controller.banner['url'] ?? ''),
-                icon: const Icon(Icons.link),
-                label: const Text('Usar URL'),
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4F46E5), foregroundColor: Colors.white),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed: () async {
-                  final picker = ImagePicker();
-                  final XFile? image = await picker.pickImage(source: ImageSource.gallery, maxWidth: 800);
-                  if (image != null) {
-                    final bytes = await image.readAsBytes();
-                    final base64Image = 'data:image/${image.path.split('.').last};base64,${base64Encode(bytes)}';
-                    await controller.updateBanner(base64Image);
-                  }
-                },
-                icon: const Icon(Icons.image),
-                label: const Text('Subir Imagen'),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-              ),
-            ),
-          ],
+        ElevatedButton.icon(
+          onPressed: () async {
+            final picker = ImagePicker();
+            final XFile? image = await picker.pickImage(source: ImageSource.gallery, maxWidth: 800);
+            if (image != null) {
+              final bytes = await image.readAsBytes();
+              final base64Image = base64Encode(bytes);
+              controller.banner['image_base64'] = base64Image;
+              // Forzamos rebuild manual cambiando el state
+              // (aunque el onChanged ya lo hace en los TextFields, aquí necesitamos update visual rápido)
+              // context.read<AdminDashboardController>().notifyListeners(); no accesible directamente, pero updateBanner lo hará
+            }
+          },
+          icon: const Icon(Icons.image),
+          label: const Text('Elegir Nueva Foto'),
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+        ),
+        
+        const SizedBox(height: 24),
+        ElevatedButton.icon(
+          onPressed: () => controller.updateBanner(
+            controller.banner['title'] ?? '',
+            controller.banner['concept'] ?? '',
+            controller.banner['image_base64'] ?? ''
+          ),
+          icon: const Icon(Icons.save),
+          label: const Text('Guardar y Publicar Anuncio'),
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4F46E5), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16)),
+        ),
+        
+        const SizedBox(height: 32),
+        const Divider(),
+        const SizedBox(height: 16),
+        
+        const Text('Lanzar Oferta / Alerta (Push en vivo)', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.orange)),
+        const Text('Envía una notificación inmediata a todos los teléfonos.', style: TextStyle(color: Colors.grey)),
+        const SizedBox(height: 16),
+        
+        Builder(
+          builder: (ctx) {
+            String bTitle = '';
+            String bSummary = '';
+            String bDesc = '';
+            return Column(
+              children: [
+                TextFormField(
+                  decoration: const InputDecoration(labelText: 'Título de la Oferta', border: OutlineInputBorder()),
+                  onChanged: (v) => bTitle = v,
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  decoration: const InputDecoration(labelText: 'Resumen corto', border: OutlineInputBorder()),
+                  onChanged: (v) => bSummary = v,
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  maxLines: 3,
+                  decoration: const InputDecoration(labelText: 'Descripción completa', border: OutlineInputBorder()),
+                  onChanged: (v) => bDesc = v,
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () async {
+                      if (bTitle.isEmpty || bDesc.isEmpty) return;
+                      await controller.sendBroadcast(bTitle, bSummary, bDesc, 'success');
+                      if (ctx.mounted) {
+                        if (controller.error != null) {
+                           ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Error: ${controller.error}'), backgroundColor: Colors.red));
+                        } else {
+                           ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Notificación enviada a todos')));
+                        }
+                      }
+                    },
+                    icon: const Icon(Icons.send),
+                    label: const Text('Enviar a Todos Ahora'),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16)),
+                  ),
+                ),
+              ],
+            );
+          }
         ),
       ],
     );
@@ -1141,39 +1243,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           
           const SizedBox(height: 32),
-          // Banner Publicitario para Clientes
-          Consumer<AdminDashboardController>(
-            builder: (context, adminCtrl, _) {
-              final bannerUrl = adminCtrl.banner['url'] ?? '';
-              if (bannerUrl.isEmpty) return const SizedBox.shrink();
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Anuncio',
-                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18, color: Colors.black87),
-                  ),
-                  const SizedBox(height: 12),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: bannerUrl.startsWith('data:')
-                      ? Image.memory(
-                          _getDecodedBytes(bannerUrl.split(',').last),
-                          height: 100, width: double.infinity, fit: BoxFit.cover,
-                        )
-                      : Image.network(
-                          bannerUrl,
-                          height: 100,
-                          width: double.infinity,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                        ),
-                  ),
-                ],
-              );
-            },
-          ),
-          const SizedBox(height: 24),
+
         ],
       ),
     );

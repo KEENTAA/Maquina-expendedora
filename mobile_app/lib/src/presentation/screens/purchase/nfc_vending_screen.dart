@@ -1,3 +1,4 @@
+import "cart_checkout_screen.dart";
 import 'dart:typed_data';
 import 'dart:convert';
 import 'dart:async';
@@ -112,53 +113,23 @@ class _NfcVendingScreenState extends State<NfcVendingScreen> {
   Future<void> _checkout() async {
     if (_cart.isEmpty) return;
     
-    // Para simplificar y usar la pila del ESP32, enviaremos la confirmación del pago en lote o secuencial
-    // Redirigimos a una pantalla de procesamiento que se encargue de cobrarlos 
-    // Para reutilizar PaymentConfirmationScreen, podemos pasarle el primer item y modificarlo,
-    // pero el usuario quiere mandarlos en una pila.
-    
-    // Procesamiento secuencial
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator()),
+    final result = await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CartCheckoutScreen(
+          cartItems: _cart,
+          machineId: widget.machineId,
+        ),
+      ),
     );
-
-    final purchase = context.read<PurchaseController>();
-    int successCount = 0;
-
-    for (final item in _cart) {
-      final price = double.tryParse(item['price'].toString()) ?? 0.0;
-      final slot = item['slot'];
-      final productId = item['product_id'] ?? slot;
-      
-      final success = await purchase.initMachineTransaction(
-        widget.machineId,
-        productId: productId,
-        amount: price,
-      );
-
-      if (success && purchase.transaction != null) {
-        final payerEmail = context.read<AuthController>().session?.email ?? '';
-        final confirmed = await purchase.confirmAndPay(payerEmail: payerEmail);
-        if (confirmed) {
-          successCount++;
-        }
-      }
-    }
-
-    if (!mounted) return;
-    Navigator.pop(context); // Close dialog
     
-    if (successCount == _cart.length) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('¡Compra exitosa! $successCount productos están cayendo.')),
-      );
-      Navigator.pop(context); // Close screen
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Hubo un error. Solo se despacharon $successCount productos.')),
-      );
+    if (result == true && mounted) {
+       // Compra completada exitosamente, cerramos la pantalla NFC
+       Navigator.pop(context);
+    } else if (result != null && mounted) {
+       // Completada con errores o parcial, vaciamos el carrito
+       setState(() {
+         _cart.clear();
+       });
     }
   }
 

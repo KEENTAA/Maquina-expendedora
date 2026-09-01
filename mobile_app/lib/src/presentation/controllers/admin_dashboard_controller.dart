@@ -1,3 +1,4 @@
+import '../../data/services/notification_api_service.dart';
 import 'package:flutter/foundation.dart';
 import '../../data/services/orchestrator_api_service.dart';
 import '../../data/services/vending_api_service.dart';
@@ -13,6 +14,7 @@ class AdminDashboardController extends ChangeNotifier {
 
   double totalSales = 0.0;
   Map<String, int> statusBreakdown = {};
+  Map<String, bool> machineLights = {};
   List<Map<String, dynamic>> tempHistory = [];
   List<Map<String, dynamic>> distanceHistory = [];
   
@@ -155,13 +157,13 @@ class AdminDashboardController extends ChangeNotifier {
     }
   }
 
-  Future<void> updateBanner(String url) async {
+  Future<void> updateBanner(String title, String concept, String imageBase64) async {
     loading = true;
     error = null;
     notifyListeners();
 
     try {
-      await _vendingApi.updateBanner(url);
+      await _vendingApi.updateBanner(title, concept, imageBase64);
       banner = await _vendingApi.getBanner();
     } catch (e) {
       error = e.toString();
@@ -174,6 +176,8 @@ class AdminDashboardController extends ChangeNotifier {
   Future<void> toggleLights(String machineId) async {
     try {
       await _api.toggleLights(machineId);
+      machineLights[machineId] = !(machineLights[machineId] ?? false);
+      notifyListeners();
     } catch (e) {
       error = e.toString();
       notifyListeners();
@@ -220,6 +224,34 @@ class AdminDashboardController extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       error = e.toString();
+      notifyListeners();
+    }
+  }
+
+
+  Future<void> updateMachineLocation(String machineId, double lat, double lng) async {
+    try {
+      await _vendingApi.updateMachineLocation(machineId, lat, lng);
+      await loadStats();
+    } catch (e) {
+      error = e.toString();
+      notifyListeners();
+    }
+  }
+
+
+  Future<void> sendBroadcast(String title, String summary, String description, String type) async {
+    loading = true;
+    error = null;
+    notifyListeners();
+
+    try {
+      final notifApi = NotificationApiService();
+      await notifApi.broadcastNotification(title, summary, description, type);
+    } catch (e) {
+      error = e.toString();
+    } finally {
+      loading = false;
       notifyListeners();
     }
   }

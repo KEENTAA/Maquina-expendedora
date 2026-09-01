@@ -39,10 +39,14 @@ class VendingApiService {
     );
   }
 
-  Future<Map<String, dynamic>> updateBanner(String url) {
+  Future<Map<String, dynamic>> updateBanner(String title, String concept, String imageBase64) {
     return _http.postJson(
       Uri.parse('${AppConfig.vendingUrl}/api/v1/admin/settings/banner'),
-      body: {'url': url},
+      body: {
+        'title': title,
+        'concept': concept,
+        'image_base64': imageBase64,
+      },
     );
   }
 
@@ -58,6 +62,14 @@ class VendingApiService {
     return _http.patchJson(
       Uri.parse('${AppConfig.vendingUrl}/api/v1/inventory/$inventoryId'),
       body: {'stock': stock, 'capacity': 20}, // Assuming capacity is 20
+    );
+  }
+
+
+  Future<Map<String, dynamic>> updateMachineLocation(String machineId, double lat, double lng) {
+    return _http.patchJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/$machineId/location'),
+      body: {'latitude': lat, 'longitude': lng},
     );
   }
 
