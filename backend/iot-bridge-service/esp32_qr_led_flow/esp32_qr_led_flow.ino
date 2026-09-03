@@ -64,7 +64,7 @@ const float UMBRAL_CAIDA_CM = 3.0;
 // ================= CONFIGURACION SISTEMA ==================
 const char* WIFI_SSID     = "ar-HP-Laptop-15-da2xxx";
 const char* WIFI_PASSWORD = "123456789";
-String SERVER_IP          = "10.42.0.1";
+String SERVER_IP          = "68.211.144.";
 const char* MACHINE_ID    = "MACHINE-001";
 const int   WEBHOOK_PORT  = 8081;
 const unsigned long POLL_INTERVAL_MS     = 1500;

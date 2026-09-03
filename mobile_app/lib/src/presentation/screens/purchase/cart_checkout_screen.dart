@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../../domain/entities/product_transaction.dart';
+import 'purchase_result_screen.dart';
 
 import '../../controllers/auth_controller.dart';
 import '../../controllers/purchase_controller.dart';
@@ -20,6 +22,7 @@ class _CartCheckoutScreenState extends State<CartCheckoutScreen> {
   int _currentIndex = 0;
   List<String> _successLog = [];
   List<String> _errorLog = [];
+  List<ProductTransaction> _finalTransactions = [];
 
   double get _totalAmount {
     return widget.cartItems.fold(0.0, (sum, item) {
@@ -44,6 +47,7 @@ class _CartCheckoutScreenState extends State<CartCheckoutScreen> {
       _currentIndex = 0;
       _successLog = [];
       _errorLog = [];
+      _finalTransactions = [];
     });
 
     final purchase = context.read<PurchaseController>();
@@ -68,8 +72,18 @@ class _CartCheckoutScreenState extends State<CartCheckoutScreen> {
 
         if (success && purchase.transaction != null) {
           final confirmed = await purchase.confirmAndPay(payerEmail: payerEmail);
-          if (confirmed) {
-            _successLog.add('$name (Slot $slot) despachado.');
+          if (confirmed && purchase.transaction != null) {
+            _finalTransactions.add(purchase.transaction!);
+            final state = purchase.transaction!.state.toString();
+            if (state.contains('completed')) {
+              _successLog.add('$name (Slot $slot) despachado.');
+            } else if (state.contains('refunded')) {
+              _errorLog.add('$name (Slot $slot) atascado. Reembolsado.');
+            } else if (state.contains('failed')) {
+              _errorLog.add('$name (Slot $slot) falló en máquina.');
+            } else {
+              _successLog.add('$name (Slot $slot) en proceso (IoT)...');
+            }
           } else {
             _errorLog.add('Error al cobrar $name: ${purchase.error}');
           }
@@ -91,6 +105,14 @@ class _CartCheckoutScreenState extends State<CartCheckoutScreen> {
     
     // Refresh wallet balance
     wallet.load(payerEmail);
+    
+    if (widget.cartItems.length == 1 && _finalTransactions.isNotEmpty) {
+      if (mounted) {
+         Navigator.of(context).pushReplacement(
+           MaterialPageRoute(builder: (_) => PurchaseResultScreen(transaction: _finalTransactions.first))
+         );
+      }
+    }
   }
 
   @override

@@ -34,4 +34,5 @@ class AppConfig {
   static String get vendingUrl => serviceUrl(8040);
   static String get iotUrl => serviceUrl(8050);
   static String get notificationUrl => serviceUrl(8070);
+  static String get auditUrl => serviceUrl(8080);
 }

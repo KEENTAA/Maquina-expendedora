@@ -33,6 +33,7 @@ import '../../../domain/entities/auth_session.dart';
 import '../../controllers/notification_controller.dart';
 import '../notifications/notification_screens.dart';
 import 'admin_panel_tab.dart';
+import 'audit_logs_tab.dart';
 import 'devops_panel_tab.dart';
 import '../settings/settings_screen.dart';
 
@@ -262,7 +263,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final isDevOps = session.role == 'DEVOPS';
 
     return DefaultTabController(
-      length: isAdmin ? 4 : (isDevOps ? 2 : 1),
+      length: isAdmin ? 5 : (isDevOps ? 2 : 1),
       child: Scaffold(
         backgroundColor: const Color(0xFFF8F9FE),
         appBar: AppBar(
@@ -328,6 +329,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       Tab(text: 'Ventas', icon: Icon(Icons.analytics)),
                       Tab(text: 'Máquinas', icon: Icon(Icons.grid_view)),
                       Tab(text: 'Publicidad', icon: Icon(Icons.campaign)),
+                      Tab(text: 'Auditoría', icon: Icon(Icons.security)),
                     ],
                     labelColor: Color(0xFF4F46E5),
                     unselectedLabelColor: Colors.grey,
@@ -352,6 +354,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   _buildAdminSalesTab(context),
                   _buildAdminMachinesTab(context),
                   _buildAdminBannerTab(context),
+                  const AuditLogsTab(),
                 ],
               )
             : (isDevOps

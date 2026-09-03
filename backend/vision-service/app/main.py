@@ -166,7 +166,7 @@ def _monitor_for_dispense(tx_id: str, duration_seconds: int, stop_event: threadi
 
 def _notify_orchestrator(tx_id: str, success: bool, log_message: str):
     url = ORCHESTRATOR_URL.format(tx_id=tx_id)
-    payload = DispenseResultPayload(success=success, error_log=log_message).model_dump_json()
+    payload = DispenseResultPayload(success=success, error_log=log_message).model_dump()
     headers = {"Content-Type": "application/json"}
     
     try:

@@ -6,6 +6,24 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from jose import jwt
 from passlib.context import CryptContext
+
+AUDIT_SERVICE_URL = os.getenv("AUDIT_SERVICE_URL", "http://audit-service:8080")
+import httpx
+import threading
+def send_audit_log_sync(category, action, actor_id=None, details=None):
+    def _send():
+        try:
+            payload = {
+                "category": category,
+                "action": action,
+                "actor_id": actor_id,
+                "details": details or {}
+            }
+            httpx.post(f"{AUDIT_SERVICE_URL}/api/v1/audit/logs", json=payload, timeout=2.0)
+        except Exception as e:
+            print(f"AUDIT LOG ERROR: {e}")
+    threading.Thread(target=_send).start()
+
 from pydantic import BaseModel
 from sqlalchemy import DateTime, ForeignKey, String, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
@@ -155,6 +173,8 @@ def login(req: LoginRequest) -> LoginResponse:
             JWT_SECRET,
             algorithm=JWT_ALG,
         )
+        # AUDIT LOG
+        send_audit_log_sync("SECURITY", "LOGIN_SUCCESS", actor_id=user.email, details={"method": "email"})
         return LoginResponse(
             access_token=token,
             token_type="bearer",

@@ -100,14 +100,14 @@ void loop() {
       int motorIndex = -1;
       bool dir = true; 
       
-      if      (code == "A1") { motorIndex = 0; dir = false; }
-      else if (code == "A2") motorIndex = 1;
+      if      (code == "A1") motorIndex = 0;
+      else if (code == "A2") { motorIndex = 1; dir = false; } 
       else if (code == "A3") { motorIndex = 2; dir = false; } 
-      else if (code == "A7") motorIndex = 3;
-      else if (code == "C1") motorIndex = 4;
+      else if (code == "A7") { motorIndex = 3; dir = false; }
+      else if (code == "C1") { motorIndex = 4; dir = false; }
       else if (code == "C2") motorIndex = 5;
-      else if (code == "C3") motorIndex = 6;
-      else if (code == "C7") motorIndex = 7;
+      else if (code == "C3") { motorIndex = 6; dir = false; }
+      else if (code == "C7") { motorIndex = 7; dir = false; }
 
       if (motorIndex != -1) {
         ejecutarGiro(motorIndex, dir);

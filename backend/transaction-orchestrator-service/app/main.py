@@ -16,7 +16,23 @@ NOTIFICATION_SERVICE_URL = os.getenv("NOTIFICATION_SERVICE_URL", "http://notific
 IOT_WEBHOOK_ENABLED = os.getenv("IOT_WEBHOOK_ENABLED", "false").lower() == "true"
 IOT_WEBHOOK_URL_TEMPLATE = os.getenv("IOT_WEBHOOK_URL_TEMPLATE", "")
 IOT_WEBHOOK_TIMEOUT = float(os.getenv("IOT_WEBHOOK_TIMEOUT", "3.0"))
+AUDIT_SERVICE_URL = os.getenv("AUDIT_SERVICE_URL", "http://audit-service:8080")
 VISION_SERVICE_URL = os.getenv("VISION_SERVICE_URL", "http://vision-service:8060") # Nuevo
+
+
+async def audit_log(category: str, action: str, actor_id: str = None, machine_id: str = None, details: dict = None):
+    try:
+        async with httpx.AsyncClient() as client:
+            payload = {
+                "category": category,
+                "action": action,
+                "actor_id": actor_id,
+                "machine_id": machine_id,
+                "details": details or {}
+            }
+            await client.post(f"{AUDIT_SERVICE_URL}/api/v1/audit/logs", json=payload, timeout=2.0)
+    except:
+        pass
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -191,8 +207,14 @@ async def payment_confirmed(tx_id: str) -> TransactionResponse:
         tx.state = TransactionState.PAID_PENDING_DISPENSE.value
         tx.updated_at = datetime.utcnow()
         machine_id = tx.machine_id
+
         db.commit(); db.refresh(tx)
         res = to_response(tx)
+        
+        # AUDIT LOG
+        import asyncio
+        asyncio.create_task(audit_log("APPLICATION", "PAYMENT_CONFIRMED", actor_id=tx.user_id, machine_id=tx.machine_id, details={"tx_id": tx.id, "amount": tx.amount}))
+
 
     # --- NUEVA LOGICA PARA VISION SERVICE ---
     try:
@@ -260,17 +282,45 @@ async def dispense_result(tx_id: str, req: DispenseResultRequest) -> Transaction
                     await client.post(f"{SIMUPAY_INTEGRATION_URL}/api/v1/payments/{tx.payment_reference}/capture", timeout=10.0)
                     tx.state = TransactionState.COMPLETED.value
                     
+
                     # Reducir el stock del slot
                     try:
                         await client.patch(f"{VENDING_SERVICE_URL}/api/v1/machines/{tx.machine_id}/inventory/{tx.slot_id}/decrement", timeout=5.0)
                         print(f"Decremented stock for {tx.machine_id} slot {tx.slot_id}")
                     except Exception as e:
                         print(f"Failed to decrement stock: {e}")
+                        
+                    # AUDIT LOG
+                    import asyncio
+                    asyncio.create_task(audit_log("APPLICATION", "DISPENSE_SUCCESS", actor_id=tx.user_id, machine_id=tx.machine_id, details={"tx_id": tx.id, "slot": tx.slot_id}))
+
+                        
+                    # Notificar al cliente sobre el exito
+                    if tx.user_id:
+                        try:
+                            await client.post(
+                                f"{NOTIFICATION_SERVICE_URL}/api/v1/notifications/send",
+                                json={
+                                    "user_email": tx.user_id,
+                                    "title": "¡Producto Entregado!",
+                                    "summary": "Tu compra se completó con éxito.",
+                                    "description": f"Disfruta tu {tx.product_id}. Gracias por usar Grog.",
+                                    "type": "success"
+                                },
+                                timeout=2.0
+                            )
+                        except: pass
                 elif should_refund:
+
                     # Reembolsar si el despacho falló
                     print(f"DISPENSE FAILURE: Requesting refund for tx {tx.id}")
                     await client.post(f"{SIMUPAY_INTEGRATION_URL}/api/v1/payments/{tx.payment_reference}/refund", timeout=10.0)
                     tx.state = TransactionState.REFUNDED.value
+                    
+                    # AUDIT LOG
+                    import asyncio
+                    asyncio.create_task(audit_log("APPLICATION", "DISPENSE_FAILED", actor_id=tx.user_id, machine_id=tx.machine_id, details={"tx_id": tx.id, "error": tx.error_log}))
+
 
                     # Notificar al cliente sobre el reembolso
                     if tx.user_id:
@@ -497,3 +547,14 @@ async def get_telemetry(machine_id: str, limit: int = 20):
             "machine_id": machine_id,
             "items": [{"temperature": r.temperature, "timestamp": r.timestamp} for r in rows]
         }
+
+class HardwareLogRequest(BaseModel):
+    level: str
+    message: str
+    source: str = "ESP32_MASTER"
+
+@app.post("/api/v1/machines/{machine_id}/hardware-log")
+async def receive_hardware_log(machine_id: str, req: HardwareLogRequest):
+    import asyncio
+    asyncio.create_task(audit_log("HARDWARE", req.level, actor_id=req.source, machine_id=machine_id, details={"message": req.message}))
+    return {"status": "ok"}
