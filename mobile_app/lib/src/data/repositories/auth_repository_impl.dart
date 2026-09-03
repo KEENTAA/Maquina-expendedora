@@ -78,7 +78,13 @@ class AuthRepositoryImpl implements AuthRepository {
   Future<AuthSession?> loadSession() => _sessionStorage.read();
 
   @override
-  Future<void> logout() => _sessionStorage.clear();
+  Future<void> logout() async {
+    final session = await _sessionStorage.read();
+    if (session != null) {
+      await _authApi.logout(session.email);
+    }
+    await _sessionStorage.clear();
+  }
 
   @override
   Future<void> saveIp(String ip) => _settingsStorage.saveIp(ip);

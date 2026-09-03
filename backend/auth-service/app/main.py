@@ -267,3 +267,10 @@ def list_users() -> dict:
     with SessionLocal() as db:
         users = db.query(User).all()
         return {"users": [{"email": u.email, "role": u.role.name, "name": u.full_name, "simupay_email": u.simupay_email, "avatar_base64": u.avatar_base64} for u in users]}
+
+@app.post("/api/v1/auth/logout")
+def logout(req: dict):
+    # We expect {"email": "..."} in body
+    email = req.get("email", "unknown")
+    send_audit_log_sync("SECURITY", "LOGOUT", actor_id=email, details={"method": "email"})
+    return {"status": "ok"}

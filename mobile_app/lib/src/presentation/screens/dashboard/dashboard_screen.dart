@@ -1231,14 +1231,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   final uri = Uri.parse(
                     '${AppConfig.simupayWebUrl}/login?redirect=grog://wallet/callback',
                   );
-                  if (await canLaunchUrl(uri)) {
+                  try {
                     await launchUrl(
                       uri,
                       mode: LaunchMode.externalApplication,
                     );
-                  } else {
-                    // Si no puede abrir la URL directa, intentamos con la base
-                    await _load(linkWallet: true);
+                  } catch (e) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Error al abrir el navegador: $e')),
+                    );
                   }
                 },
               ),
