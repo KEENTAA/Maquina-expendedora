@@ -81,8 +81,12 @@ class AuthRepositoryImpl implements AuthRepository {
   Future<void> logout() async {
     final session = await _sessionStorage.read();
     if (session != null) {
-      await _authApi.logout(session.email);
+      // Dispara la petición pero NO la espera, con timeout estricto de 3 segundos
+      _authApi.logout(session.email)
+          .timeout(const Duration(seconds: 3))
+          .catchError((_) {});
     }
+    // Limpia la sesión inmediatamente sin importar qué pase con la red
     await _sessionStorage.clear();
   }
 
