@@ -1,3 +1,4 @@
+import 'dart:async';
 import '../../data/services/notification_api_service.dart';
 import 'package:flutter/foundation.dart';
 import '../../data/services/orchestrator_api_service.dart';
@@ -8,14 +9,19 @@ class AdminDashboardController extends ChangeNotifier {
   final OrchestratorApiService _api;
   final VendingApiService _vendingApi;
   final IotApiService _iotApi;
+  Timer? _sessionCodeTimer;
 
   bool loading = false;
   String? error;
 
   double totalSales = 0.0;
+  int totalUnitsSold = 0;
   Map<String, int> statusBreakdown = {};
+  Map<String, Map<String, int>> methodBreakdown = {};
   Map<String, bool> machineLights = {};
   List<Map<String, dynamic>> tempHistory = [];
+  double? minTemp;
+  double? maxTemp;
   List<Map<String, dynamic>> distanceHistory = [];
   
   List<dynamic> machines = [];
@@ -24,6 +30,7 @@ class AdminDashboardController extends ChangeNotifier {
   Map<String, List<dynamic>> topSellers = {};
   Map<String, List<dynamic>> failedSlots = {};
   Map<String, dynamic> banner = {};
+  Map<String, Map<String, dynamic>> machineSessionCodes = {};
 
   AdminDashboardController({
     OrchestratorApiService? api,
@@ -33,6 +40,40 @@ class AdminDashboardController extends ChangeNotifier {
        _vendingApi = vendingApi ?? VendingApiService(),
        _iotApi = iotApi ?? IotApiService();
 
+  void startSessionCodePolling() {
+    _sessionCodeTimer?.cancel();
+    _sessionCodeTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      refreshSessionCodes();
+    });
+  }
+
+  void stopSessionCodePolling() {
+    _sessionCodeTimer?.cancel();
+    _sessionCodeTimer = null;
+  }
+
+  Future<void> refreshSessionCodes() async {
+    if (machines.isEmpty) return;
+    bool hasChanges = false;
+    for (var machine in machines) {
+      final machineId = machine['id'];
+      try {
+        final codeData = await _vendingApi.getSessionCode(machineId);
+        machineSessionCodes[machineId] = codeData;
+        hasChanges = true;
+      } catch (_) {}
+    }
+    if (hasChanges) {
+      notifyListeners();
+    }
+  }
+
+  @override
+  void dispose() {
+    stopSessionCodePolling();
+    super.dispose();
+  }
+
   Future<void> loadStats() async {
     loading = true;
     error = null;
@@ -41,7 +82,17 @@ class AdminDashboardController extends ChangeNotifier {
     try {
       final summary = await _api.getAdminStatsSummary();
       totalSales = (summary['total_sales'] as num).toDouble();
+      totalUnitsSold = (summary['total_units_sold'] as num?)?.toInt() ?? 0;
       statusBreakdown = Map<String, int>.from(summary['status_breakdown'] ?? {});
+      
+      final rawMethod = summary['method_breakdown'];
+      if (rawMethod is Map) {
+        methodBreakdown = rawMethod.map(
+          (k, v) => MapEntry(k.toString(), Map<String, int>.from(v is Map ? v : {})),
+        );
+      } else {
+        methodBreakdown = {};
+      }
       
       banner = await _vendingApi.getBanner();
 
@@ -53,19 +104,24 @@ class AdminDashboardController extends ChangeNotifier {
       final iotData = await _iotApi.listIotMachines();
       iotMachines = iotData['machines'] ?? [];
       
-      // Load inventories and stats for all machines
-      for (var machine in machines) {
+      // Load inventories, stats and active session codes for all machines concurrently
+      await Future.wait(machines.map((machine) async {
         final machineId = machine['id'];
-        final inventoryData = await _vendingApi.getInventory(machineId);
-        inventories[machineId] = inventoryData['items'] ?? [];
-        
-        final topSellersData = await _api.getTopSellers(machineId);
-        topSellers[machineId] = List<Map<String, dynamic>>.from(topSellersData['items'] ?? []);
-
-        final failedSlotsData = await _api.getFailedSlots(machineId);
-        failedSlots[machineId] = List<Map<String, dynamic>>.from(failedSlotsData['items'] ?? []);
-      }
+        try {
+          final results = await Future.wait([
+            _vendingApi.getInventory(machineId),
+            _api.getTopSellers(machineId: machineId),
+            _api.getFailedSlots(machineId: machineId),
+            _vendingApi.getSessionCode(machineId).catchError((_) => <String, dynamic>{}),
+          ]);
+          inventories[machineId] = (results[0] as Map<String, dynamic>)['items'] ?? [];
+          topSellers[machineId] = List<Map<String, dynamic>>.from((results[1] as Map<String, dynamic>)['items'] ?? []);
+          failedSlots[machineId] = List<Map<String, dynamic>>.from((results[2] as Map<String, dynamic>)['items'] ?? []);
+          machineSessionCodes[machineId] = results[3] as Map<String, dynamic>;
+        } catch (_) {}
+      }));
       
+      startSessionCodePolling();
       notifyListeners();
     } catch (e) {
       error = e.toString();
@@ -73,6 +129,21 @@ class AdminDashboardController extends ChangeNotifier {
       loading = false;
       notifyListeners();
     }
+  }
+
+  Future<void> loadBannerOnly() async {
+    try {
+      banner = await _vendingApi.getBanner();
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> loadMachinesOnly() async {
+    try {
+      final machinesData = await _vendingApi.listMachines();
+      machines = machinesData['machines'] ?? [];
+      notifyListeners();
+    } catch (_) {}
   }
 
   Future<void> sendIotCommand(String machineId, String command) async {
@@ -93,18 +164,32 @@ class AdminDashboardController extends ChangeNotifier {
     }
   }
 
-  Future<void> updateSlotDetails(String machineId, String slot, String inventoryId, double newPrice, int newStock, bool isEnabled, String? slotType) async {
+  Future<void> updateSlotDetails(
+    String machineId,
+    String slot,
+    String inventoryId,
+    double newPrice,
+    int newStock,
+    bool isEnabled,
+    String? slotType, {
+    String? newProductName,
+    String? newSlot,
+  }) async {
     loading = true;
     error = null;
     notifyListeners();
 
     try {
       await _vendingApi.updateInventoryPrice(machineId, slot, newPrice);
-      await _vendingApi.updateSlotStatus(machineId, slot, isEnabled, slotType);
+      await _vendingApi.updateSlotStatus(
+        machineId,
+        slot,
+        isEnabled,
+        slotType,
+        productName: newProductName,
+        newSlot: newSlot,
+      );
       
-      // Need to find the inventory id or use slot. The API takes inventory_id. 
-      // But we only have slot! Wait, let's look at the API. The API is /api/v1/inventory/{inventory_id}
-      // Or does _vendingApi have updateStock? Let's implement updateInventoryStock in VendingApiService!
       await _vendingApi.updateInventoryStock(inventoryId, newStock);
 
       await _api.refreshConfig(machineId);
@@ -117,6 +202,68 @@ class AdminDashboardController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+  Future<void> createSlot(
+    String machineId, {
+    required String slot,
+    required String productName,
+    required double price,
+    required int stock,
+    int capacity = 20,
+    String slotType = 'soda',
+  }) async {
+    loading = true;
+    error = null;
+    notifyListeners();
+
+    try {
+      await _vendingApi.createSlot(
+        machineId,
+        slot: slot,
+        productName: productName,
+        price: price,
+        stock: stock,
+        capacity: capacity,
+        slotType: slotType,
+      );
+      await _api.refreshConfig(machineId);
+      final inventoryData = await _vendingApi.getInventory(machineId);
+      inventories[machineId] = inventoryData['items'] ?? [];
+    } catch (e) {
+      error = e.toString();
+    } finally {
+      loading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> reorderSlots(String machineId, List<String> orderedSlots) async {
+    try {
+      // Optimistic update
+      final currentList = inventories[machineId] ?? [];
+      final Map<String, dynamic> itemMap = {
+        for (var item in currentList) item['slot'].toString(): item
+      };
+      final reordered = <dynamic>[];
+      for (var s in orderedSlots) {
+        if (itemMap.containsKey(s)) {
+          reordered.add(itemMap[s]);
+        }
+      }
+      inventories[machineId] = reordered;
+      notifyListeners();
+
+      await _vendingApi.reorderSlots(machineId, orderedSlots);
+      await _api.refreshConfig(machineId);
+      final inventoryData = await _vendingApi.getInventory(machineId);
+      inventories[machineId] = inventoryData['items'] ?? [];
+      notifyListeners();
+    } catch (e) {
+      error = e.toString();
+      notifyListeners();
+    }
+  }
+
 
   Future<void> updatePrice(String machineId, String slot, double newPrice) async {
     loading = true;
@@ -157,7 +304,12 @@ class AdminDashboardController extends ChangeNotifier {
     }
   }
 
-  Future<void> updateBanner(String title, String concept, String imageBase64) async {
+  void setBannerImage(String imageBase64) {
+    banner['image_base64'] = imageBase64;
+    notifyListeners();
+  }
+
+  Future<bool> updateBanner(String title, String concept, String imageBase64) async {
     loading = true;
     error = null;
     notifyListeners();
@@ -165,8 +317,10 @@ class AdminDashboardController extends ChangeNotifier {
     try {
       await _vendingApi.updateBanner(title, concept, imageBase64);
       banner = await _vendingApi.getBanner();
+      return true;
     } catch (e) {
       error = e.toString();
+      return false;
     } finally {
       loading = false;
       notifyListeners();
@@ -184,14 +338,24 @@ class AdminDashboardController extends ChangeNotifier {
     }
   }
 
-  Future<void> loadTempHistory({int intervalMinutes = 10}) async {
+  Future<void> loadTempHistory({
+    String? machineId,
+    int intervalMinutes = 10,
+    int hours = 1,
+  }) async {
     loading = true;
     error = null;
     notifyListeners();
 
     try {
-      final history = await _api.getTemperatureHistory(intervalMinutes: intervalMinutes);
+      final history = await _api.getTemperatureHistory(
+        machineId: machineId ?? 'all',
+        intervalMinutes: intervalMinutes,
+        hours: hours,
+      );
       tempHistory = List<Map<String, dynamic>>.from(history['items'] ?? []);
+      minTemp = (history['min_temperature'] as num?)?.toDouble();
+      maxTemp = (history['max_temperature'] as num?)?.toDouble();
     } catch (e) {
       error = e.toString();
     } finally {
@@ -200,13 +364,19 @@ class AdminDashboardController extends ChangeNotifier {
     }
   }
 
-  Future<void> loadDistanceHistory() async {
+  Future<void> loadDistanceHistory({
+    String? machineId,
+    int hours = 24,
+  }) async {
     loading = true;
     error = null;
     notifyListeners();
 
     try {
-      final history = await _api.getDistanceHistory();
+      final history = await _api.getDistanceHistory(
+        machineId: machineId ?? 'all',
+        hours: hours,
+      );
       distanceHistory = List<Map<String, dynamic>>.from(history['items'] ?? []);
     } catch (e) {
       error = e.toString();
@@ -240,7 +410,7 @@ class AdminDashboardController extends ChangeNotifier {
   }
 
 
-  Future<void> sendBroadcast(String title, String summary, String description, String type) async {
+  Future<bool> sendBroadcast(String title, String summary, String description, String type) async {
     loading = true;
     error = null;
     notifyListeners();
@@ -248,12 +418,44 @@ class AdminDashboardController extends ChangeNotifier {
     try {
       final notifApi = NotificationApiService();
       await notifApi.broadcastNotification(title, summary, description, type);
+      return true;
     } catch (e) {
       error = e.toString();
+      return false;
     } finally {
       loading = false;
       notifyListeners();
     }
   }
 
+  Future<Map<String, dynamic>?> getMachineConfig(String machineId) async {
+    try {
+      final res = await _vendingApi.getMachineConfig(machineId);
+      return res['config'] as Map<String, dynamic>?;
+    } catch (e) {
+      error = e.toString();
+      notifyListeners();
+      return null;
+    }
+  }
+
+  Future<bool> updateMachineConfig(String machineId, {int? codeTtl, String? wifiSsid, String? wifiPassword, String? serverIp}) async {
+    try {
+      await _vendingApi.updateMachineConfig(
+        machineId,
+        codeTtl: codeTtl,
+        wifiSsid: wifiSsid,
+        wifiPassword: wifiPassword,
+        serverIp: serverIp,
+      );
+      notifyListeners();
+      return true;
+    } catch (e) {
+      error = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
 }
+

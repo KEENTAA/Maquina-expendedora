@@ -19,6 +19,7 @@ class OrchestratorApiService {
     required String machineId,
     String? productId,
     double? amount,
+    String paymentMethod = 'QR',
   }) {
     return _http.postJson(
       Uri.parse('${AppConfig.orchestratorUrl}/api/v1/transactions/init'),
@@ -26,6 +27,7 @@ class OrchestratorApiService {
         'machine_id': machineId,
         'product_id': productId ?? 'PROD-1',
         'amount': amount,
+        'payment_method': paymentMethod,
       },
     );
   }
@@ -46,34 +48,39 @@ class OrchestratorApiService {
     );
   }
 
-  Future<Map<String, dynamic>> getAdminStatsSummary() {
+  Future<Map<String, dynamic>> getAdminStatsSummary({String? machineId}) {
+    final query = machineId != null && machineId.isNotEmpty ? '?machine_id=$machineId' : '';
     return _http.getJson(
-      Uri.parse('${AppConfig.orchestratorUrl}/api/v1/admin/stats/summary'),
+      Uri.parse('${AppConfig.orchestratorUrl}/api/v1/admin/stats/summary$query'),
     );
   }
 
-  Future<Map<String, dynamic>> getTemperatureHistory({int intervalMinutes = 10}) {
+  Future<Map<String, dynamic>> getTemperatureHistory({
+    String machineId = 'all',
+    int intervalMinutes = 10,
+    int hours = 1,
+  }) {
     return _http.getJson(
       Uri.parse(
-        '${AppConfig.orchestratorUrl}/api/v1/admin/stats/temperature-history?interval_minutes=$intervalMinutes',
+        '${AppConfig.orchestratorUrl}/api/v1/admin/stats/temperature-history?machine_id=$machineId&interval_minutes=$intervalMinutes&hours=$hours',
       ),
     );
   }
 
-  Future<Map<String, dynamic>> getDistanceHistory() {
+  Future<Map<String, dynamic>> getDistanceHistory({String machineId = 'all', int hours = 24}) {
+    final query = '?machine_id=$machineId&hours=$hours';
     return _http.getJson(
-      Uri.parse('${AppConfig.orchestratorUrl}/api/v1/admin/stats/distance-history'),
+      Uri.parse('${AppConfig.orchestratorUrl}/api/v1/admin/stats/distance-history$query'),
     );
   }
 
-
-  Future<Map<String, dynamic>> getTopSellers(String machineId) {
+  Future<Map<String, dynamic>> getTopSellers({String machineId = 'all'}) {
     return _http.getJson(
       Uri.parse('${AppConfig.orchestratorUrl}/api/v1/admin/stats/top-sellers?machine_id=$machineId'),
     );
   }
 
-  Future<Map<String, dynamic>> getFailedSlots(String machineId) {
+  Future<Map<String, dynamic>> getFailedSlots({String machineId = 'all'}) {
     return _http.getJson(
       Uri.parse('${AppConfig.orchestratorUrl}/api/v1/admin/stats/failed-slots?machine_id=$machineId'),
     );

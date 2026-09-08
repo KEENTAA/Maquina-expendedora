@@ -32,8 +32,7 @@ class HistoryScreen extends StatelessWidget {
                   itemCount: wallet.movements.length,
                   itemBuilder: (context, index) {
                     final m = wallet.movements[index];
-                    final isIncome = m.type.toLowerCase() == 'deposit' || 
-                                     (m.type.toLowerCase() == 'transfer' && m.toEmail == null);
+                    final isIncome = m.isIncome;
                     final color = isIncome ? Colors.green : Colors.redAccent;
 
                     return Padding(

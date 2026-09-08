@@ -9,9 +9,7 @@ class TransactionDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isIncome = movement.type.toLowerCase() == 'deposit' || 
-                     (movement.type.toLowerCase() == 'transfer' && movement.toEmail == null); // Simplified logic
-    
+    final isIncome = movement.isIncome;
     final color = isIncome ? Colors.green : Colors.redAccent;
 
     return Scaffold(

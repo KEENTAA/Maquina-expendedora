@@ -29,34 +29,77 @@ class _MapPickerScreenState extends State<MapPickerScreen> {
 
   Future<void> _useCurrentLocation() async {
     setState(() => _isLoadingLocation = true);
-    
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      setState(() => _isLoadingLocation = false);
-      return;
-    }
-
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Por favor activa el GPS / Ubicación en tu dispositivo')),
+          );
+        }
         setState(() => _isLoadingLocation = false);
         return;
       }
-    }
-    
-    if (permission == LocationPermission.deniedForever) {
-      setState(() => _isLoadingLocation = false);
-      return;
-    } 
 
-    Position position = await Geolocator.getCurrentPosition();
-    setState(() {
-      _selectedLocation = LatLng(position.latitude, position.longitude);
-      _isLoadingLocation = false;
-    });
-    
-    _mapController.move(_selectedLocation, 15.0);
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Permiso de ubicación denegado')),
+            );
+          }
+          setState(() => _isLoadingLocation = false);
+          return;
+        }
+      }
+      
+      if (permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Permisos de ubicación denegados permanentemente en ajustes')),
+          );
+        }
+        setState(() => _isLoadingLocation = false);
+        return;
+      } 
+
+      Position? position;
+      try {
+        position = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            timeLimit: Duration(seconds: 8),
+          ),
+        );
+      } catch (_) {
+        position = await Geolocator.getLastKnownPosition();
+      }
+
+      if (position != null) {
+        final newLoc = LatLng(position.latitude, position.longitude);
+        setState(() {
+          _selectedLocation = newLoc;
+          _isLoadingLocation = false;
+        });
+        _mapController.move(newLoc, 16.0);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No se pudo obtener la señal GPS actual')),
+          );
+        }
+        setState(() => _isLoadingLocation = false);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error obteniendo ubicación: $e')),
+        );
+      }
+      setState(() => _isLoadingLocation = false);
+    }
   }
 
   @override

@@ -34,6 +34,33 @@ async def audit_log(category: str, action: str, actor_id: str = None, machine_id
     except:
         pass
 
+async def send_notification_async(user_email: str, title: str, summary: str, description: str, n_type: str = "info"):
+    if not user_email:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{NOTIFICATION_SERVICE_URL}/api/v1/notifications/send",
+                json={
+                    "user_email": user_email,
+                    "title": title,
+                    "summary": summary,
+                    "description": description,
+                    "type": n_type
+                },
+                timeout=2.0
+            )
+    except Exception:
+        pass
+
+async def start_vision_monitoring_async(tx_id: str):
+    try:
+        async with httpx.AsyncClient() as client:
+            vision_payload = {"tx_id": tx_id, "duration_seconds": 15}
+            await client.post(f"{VISION_SERVICE_URL}/api/v1/vision/start-monitoring", json=vision_payload, timeout=1.0)
+    except Exception:
+        pass
+
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
@@ -63,6 +90,7 @@ class Transaction(Base):
     initial_distance: Mapped[float | None] = mapped_column(Float, nullable=True)
     final_distance: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_log: Mapped[str | None] = mapped_column(String, nullable=True)
+    payment_method: Mapped[str | None] = mapped_column(String, default="QR")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -85,6 +113,7 @@ def _ensure_schema_compatibility() -> None:
         if "initial_distance" not in tx_columns: conn.execute(text("ALTER TABLE transactions ADD COLUMN initial_distance DOUBLE PRECISION"))
         if "final_distance" not in tx_columns: conn.execute(text("ALTER TABLE transactions ADD COLUMN final_distance DOUBLE PRECISION"))
         if "error_log" not in tx_columns: conn.execute(text("ALTER TABLE transactions ADD COLUMN error_log TEXT"))
+        if "payment_method" not in tx_columns: conn.execute(text("ALTER TABLE transactions ADD COLUMN payment_method VARCHAR DEFAULT 'QR'"))
 
 _ensure_schema_compatibility()
 app = FastAPI(title="Grog Transaction Orchestrator")
@@ -93,6 +122,7 @@ class InitTransactionRequest(BaseModel):
     machine_id: str
     product_id: str
     amount: float | None = None
+    payment_method: str | None = "QR"
 
 class TelemetryRequest(BaseModel):
     temperature: float
@@ -114,6 +144,7 @@ class TransactionResponse(BaseModel):
     qr_image: str | None = None
     payment_reference: str | None = None
     error_log: str | None = None
+    payment_method: str | None = "QR"
 
 def to_response(tx: Transaction) -> TransactionResponse:
     return TransactionResponse(
@@ -125,11 +156,12 @@ def to_response(tx: Transaction) -> TransactionResponse:
         state=tx.state,
         qr_image=tx.qr_image,
         payment_reference=tx.payment_reference,
-        error_log=tx.error_log
+        error_log=tx.error_log,
+        payment_method=tx.payment_method or "QR"
     )
 
 @app.get("/init/{machine_id}", response_model=TransactionResponse)
-async def init_transaction(machine_id: str, product_id: str = "PROD-1", amount: float | None = None) -> TransactionResponse:
+async def init_transaction(machine_id: str, product_id: str = "PROD-1", amount: float | None = None, payment_method: str = "QR") -> TransactionResponse:
     with SessionLocal() as db:
         # IMPORTANTE: Si ya existe una transacción QR_PRINTED para esta máquina y producto, la reutilizamos para no llenar la DB de basura
         existing = db.query(Transaction).filter(
@@ -140,19 +172,27 @@ async def init_transaction(machine_id: str, product_id: str = "PROD-1", amount: 
         
         if existing:
             existing.amount = amount if amount else existing.amount
+            existing.payment_method = payment_method or existing.payment_method or "QR"
             existing.updated_at = datetime.utcnow()
             db.commit(); db.refresh(existing)
             return to_response(existing)
 
     resolved_amount = amount if amount else 10.0
-    tx = Transaction(id=str(uuid.uuid4()), machine_id=machine_id, product_id=product_id, amount=resolved_amount, state=TransactionState.QR_PRINTED.value)
+    tx = Transaction(
+        id=str(uuid.uuid4()),
+        machine_id=machine_id,
+        product_id=product_id,
+        amount=resolved_amount,
+        state=TransactionState.QR_PRINTED.value,
+        payment_method=payment_method or "QR"
+    )
     with SessionLocal() as db:
         db.add(tx); db.commit(); db.refresh(tx)
         return to_response(tx)
 
 @app.post("/api/v1/transactions/init", response_model=TransactionResponse)
 async def init_transaction_api(req: InitTransactionRequest) -> TransactionResponse:
-    return await init_transaction(req.machine_id, req.product_id, req.amount)
+    return await init_transaction(req.machine_id, req.product_id, req.amount, payment_method=req.payment_method or "QR")
 
 @app.get("/api/v1/transactions/{tx_id}", response_model=TransactionResponse)
 async def get_transaction(tx_id: str) -> TransactionResponse:
@@ -211,38 +251,24 @@ async def payment_confirmed(tx_id: str) -> TransactionResponse:
         db.commit(); db.refresh(tx)
         res = to_response(tx)
         
-        # AUDIT LOG
+        # AUDIT LOG (Asíncrono en segundo plano)
         import asyncio
         asyncio.create_task(audit_log("APPLICATION", "PAYMENT_CONFIRMED", actor_id=tx.user_id, machine_id=tx.machine_id, details={"tx_id": tx.id, "amount": tx.amount}))
 
+    # Vision Service en segundo plano (no bloquea la compra si no está corriendo)
+    asyncio.create_task(start_vision_monitoring_async(tx_id))
 
-    # --- NUEVA LOGICA PARA VISION SERVICE ---
-    try:
-        async with httpx.AsyncClient() as client:
-            vision_payload = {"tx_id": tx_id, "duration_seconds": 15} # Monitorear por 15 segundos
-            await client.post(f"{VISION_SERVICE_URL}/api/v1/vision/start-monitoring", json=vision_payload, timeout=5.0)
-            print(f"INFO: Vision Service activated for TX {tx_id}")
-    except Exception as e:
-        print(f"ERROR: Could not activate Vision Service for TX {tx_id}: {e}")
-    # --- FIN NUEVA LOGICA ---
-
-    # Notificar al cliente sobre el pago confirmado
+    # Notificar al cliente sobre el pago confirmado en segundo plano
     if tx.user_id:
-        try:
-            async with httpx.AsyncClient() as client:
-                await client.post(
-                    f"{NOTIFICATION_SERVICE_URL}/api/v1/notifications/send",
-                    json={
-                        "user_email": tx.user_id,
-                        "title": "¡Pago Confirmado!",
-                        "summary": f"Tu pago de Bs. {tx.amount} ha sido recibido.",
-                        "description": f"Estamos preparando tu producto {tx.product_id} en la máquina {tx.machine_id}.",
-                        "type": "success"
-                    },
-                    timeout=2.0
-                )
-        except Exception as e:
-            print(f"ERROR sending notification: {e}")
+        asyncio.create_task(
+            send_notification_async(
+                user_email=tx.user_id,
+                title="¡Pago Confirmado!",
+                summary=f"Tu pago de Bs. {tx.amount} ha sido recibido.",
+                description=f"Estamos preparando tu producto {tx.product_id} en la máquina {tx.machine_id}.",
+                n_type="success"
+            )
+        )
 
     if IOT_WEBHOOK_ENABLED:
         try:
@@ -285,31 +311,29 @@ async def dispense_result(tx_id: str, req: DispenseResultRequest) -> Transaction
 
                     # Reducir el stock del slot
                     try:
-                        await client.patch(f"{VENDING_SERVICE_URL}/api/v1/machines/{tx.machine_id}/inventory/{tx.slot_id}/decrement", timeout=5.0)
-                        print(f"Decremented stock for {tx.machine_id} slot {tx.slot_id}")
+                        slot_to_decrement = tx.product_id
+                        await client.patch(f"{VENDING_SERVICE_URL}/api/v1/machines/{tx.machine_id}/inventory/{slot_to_decrement}/decrement", timeout=5.0)
+                        print(f"Decremented stock for {tx.machine_id} slot {slot_to_decrement}")
                     except Exception as e:
                         print(f"Failed to decrement stock: {e}")
                         
                     # AUDIT LOG
                     import asyncio
-                    asyncio.create_task(audit_log("APPLICATION", "DISPENSE_SUCCESS", actor_id=tx.user_id, machine_id=tx.machine_id, details={"tx_id": tx.id, "slot": tx.slot_id}))
+                    asyncio.create_task(audit_log("APPLICATION", "DISPENSE_SUCCESS", actor_id=tx.user_id, machine_id=tx.machine_id, details={"tx_id": tx.id, "slot": tx.product_id}))
+
 
                         
-                    # Notificar al cliente sobre el exito
+                    # Notificar al cliente sobre el exito en segundo plano
                     if tx.user_id:
-                        try:
-                            await client.post(
-                                f"{NOTIFICATION_SERVICE_URL}/api/v1/notifications/send",
-                                json={
-                                    "user_email": tx.user_id,
-                                    "title": "¡Producto Entregado!",
-                                    "summary": "Tu compra se completó con éxito.",
-                                    "description": f"Disfruta tu {tx.product_id}. Gracias por usar Grog.",
-                                    "type": "success"
-                                },
-                                timeout=2.0
+                        asyncio.create_task(
+                            send_notification_async(
+                                user_email=tx.user_id,
+                                title="¡Producto Entregado!",
+                                summary="Tu compra se completó con éxito.",
+                                description=f"Disfruta tu {tx.product_id}. Gracias por usar Grog.",
+                                n_type="success"
                             )
-                        except: pass
+                        )
                 elif should_refund:
 
                     # Reembolsar si el despacho falló
@@ -321,22 +345,17 @@ async def dispense_result(tx_id: str, req: DispenseResultRequest) -> Transaction
                     import asyncio
                     asyncio.create_task(audit_log("APPLICATION", "DISPENSE_FAILED", actor_id=tx.user_id, machine_id=tx.machine_id, details={"tx_id": tx.id, "error": tx.error_log}))
 
-
-                    # Notificar al cliente sobre el reembolso
+                    # Notificar al cliente sobre el reembolso en segundo plano
                     if tx.user_id:
-                        try:
-                            await client.post(
-                                f"{NOTIFICATION_SERVICE_URL}/api/v1/notifications/send",
-                                json={
-                                    "user_email": tx.user_id,
-                                    "title": "Producto no entregado",
-                                    "summary": "Hubo un problema y se ha procesado tu reembolso.",
-                                    "description": f"No pudimos entregar tu producto {tx.product_id}. El monto de Bs. {tx.amount} ha sido devuelto a tu billetera.",
-                                    "type": "warning"
-                                },
-                                timeout=2.0
+                        asyncio.create_task(
+                            send_notification_async(
+                                user_email=tx.user_id,
+                                title="Producto no entregado",
+                                summary="Hubo un problema y se ha procesado tu reembolso.",
+                                description=f"No pudimos entregar tu producto {tx.product_id}. El monto de Bs. {tx.amount} ha sido devuelto a tu billetera.",
+                                n_type="warning"
                             )
-                        except: pass
+                        )
                 else:
                     # Si success=true pero no estaba PAID, quizás es un despacho gratuito o error de flujo
                     # Solo guardamos los logs de distancia
@@ -378,35 +397,39 @@ def list_tx() -> dict:
         return {"items": [to_response(r).model_dump() for r in rows]}
 
 @app.get("/api/v1/admin/stats/top-sellers")
-async def get_top_sellers(machine_id: str = "MACHINE-001"):
+async def get_top_sellers(machine_id: str | None = None):
     with SessionLocal() as db:
-        # Contar transacciones completadas por product_id (slot)
-        rows = db.query(
+        query = db.query(
             Transaction.product_id, 
-            func.count(Transaction.id).label("count")
-        ).filter(
-            Transaction.machine_id == machine_id,
-            Transaction.state == TransactionState.COMPLETED.value
-        ).group_by(Transaction.product_id).order_by(text("count DESC")).all()
+            func.count(Transaction.id).label("count"),
+            func.coalesce(func.sum(Transaction.amount), 0.0).label("total_amount")
+        ).filter(Transaction.state == TransactionState.COMPLETED.value)
+        
+        if machine_id and machine_id != "all":
+            query = query.filter(Transaction.machine_id == machine_id)
+            
+        rows = query.group_by(Transaction.product_id).order_by(text("count DESC")).all()
         
         return {
-            "machine_id": machine_id,
-            "items": [{"slot": r[0], "count": r[1]} for r in rows]
+            "machine_id": machine_id or "all",
+            "items": [{"slot": r[0], "count": r[1], "total_amount": float(r[2])} for r in rows]
         }
 
 @app.get("/api/v1/admin/stats/failed-slots")
-async def get_failed_slots(machine_id: str = "MACHINE-001"):
+async def get_failed_slots(machine_id: str | None = None):
     with SessionLocal() as db:
-        rows = db.query(
+        query = db.query(
             Transaction.product_id, 
             func.count(Transaction.id).label("count")
-        ).filter(
-            Transaction.machine_id == machine_id,
-            Transaction.state.in_([TransactionState.FAILED.value, TransactionState.REFUNDED.value])
-        ).group_by(Transaction.product_id).order_by(text("count DESC")).all()
+        ).filter(Transaction.state.in_([TransactionState.FAILED.value, TransactionState.REFUNDED.value]))
+        
+        if machine_id and machine_id != "all":
+            query = query.filter(Transaction.machine_id == machine_id)
+            
+        rows = query.group_by(Transaction.product_id).order_by(text("count DESC")).all()
         
         return {
-            "machine_id": machine_id,
+            "machine_id": machine_id or "all",
             "items": [{"slot": r[0], "count": r[1]} for r in rows]
         }
 
@@ -463,43 +486,85 @@ async def poll_commands(machine_id: str):
     return {"commands": commands}
 
 @app.get("/api/v1/admin/stats/summary")
-async def admin_stats_summary():
-    cleanup_old_transactions() # Ejecutar limpieza al cargar stats
+async def admin_stats_summary(machine_id: str | None = None):
+    cleanup_old_transactions()
     with SessionLocal() as db:
-        # Total de ventas (COMPLETED)
-        total_sales = db.query(func.sum(Transaction.amount)).filter(Transaction.state == TransactionState.COMPLETED.value).scalar() or 0.0
+        query_completed = db.query(
+            func.coalesce(func.sum(Transaction.amount), 0.0),
+            func.count(Transaction.id)
+        ).filter(Transaction.state == TransactionState.COMPLETED.value)
         
-        # Conteo por estados
-        counts = db.query(Transaction.state, func.count(Transaction.id)).group_by(Transaction.state).all()
+        query_status = db.query(
+            Transaction.state,
+            func.count(Transaction.id)
+        )
+        
+        query_method = db.query(
+            Transaction.payment_method,
+            Transaction.state,
+            func.count(Transaction.id)
+        )
+        
+        if machine_id and machine_id != "all":
+            query_completed = query_completed.filter(Transaction.machine_id == machine_id)
+            query_status = query_status.filter(Transaction.machine_id == machine_id)
+            query_method = query_method.filter(Transaction.machine_id == machine_id)
+            
+        total_sales, total_units = query_completed.first() or (0.0, 0)
+        
+        counts = query_status.group_by(Transaction.state).all()
         status_breakdown = {state: count for state, count in counts}
         
+        method_counts = query_method.group_by(Transaction.payment_method, Transaction.state).all()
+        method_breakdown = {}
+        for meth, st, cnt in method_counts:
+            meth_key = meth if meth else "QR"
+            if meth_key not in method_breakdown:
+                method_breakdown[meth_key] = {}
+            method_breakdown[meth_key][st] = cnt
+        
         return {
-            "total_sales": total_sales,
-            "status_breakdown": status_breakdown
+            "total_sales": float(total_sales or 0.0),
+            "total_units_sold": int(total_units or 0),
+            "status_breakdown": status_breakdown,
+            "method_breakdown": method_breakdown
         }
 
 
 @app.get("/api/v1/admin/stats/temperature-history")
-async def admin_temperature_history(machine_id: str = "MACHINE-001", interval_minutes: int = 10):
+async def admin_temperature_history(machine_id: str = "MACHINE-001", interval_minutes: int = 10, hours: int = 1):
     with SessionLocal() as db:
-        # Agrupación por intervalos (PostgreSQL o SQLite)
+        query = db.query(MachineTelemetry)
+        if machine_id and machine_id != "all":
+            query = query.filter(MachineTelemetry.machine_id == machine_id)
+            
+        if hours and hours > 0:
+            since = datetime.utcnow() - timedelta(hours=hours)
+            query = query.filter(MachineTelemetry.timestamp >= since)
+            
         if engine.dialect.name == "postgresql":
             bucket = text(f"to_timestamp(floor(extract(epoch from timestamp) / ({interval_minutes} * 60)) * ({interval_minutes} * 60))")
         else:
             bucket = text(f"datetime((strftime('%s', timestamp) / ({interval_minutes} * 60)) * ({interval_minutes} * 60), 'unixepoch')")
 
-        rows = db.query(
+        rows = query.with_entities(
             bucket,
             func.avg(MachineTelemetry.temperature).label("avg_temp")
-        ).filter(MachineTelemetry.machine_id == machine_id)\
-         .group_by(bucket)\
-         .order_by(bucket)\
-         .limit(100).all()
+        ).group_by(bucket).order_by(bucket).limit(300).all()
+        
+        items = [{"timestamp": str(r[0]), "temperature": round(float(r[1]), 2)} for r in rows if r[0] is not None and r[1] is not None]
+        
+        # Calcular pico máximo y mínimo
+        min_temp = min([it["temperature"] for it in items]) if items else None
+        max_temp = max([it["temperature"] for it in items]) if items else None
         
         return {
             "machine_id": machine_id,
             "interval": interval_minutes,
-            "items": [{"timestamp": r[0], "temperature": round(r[1], 2)} for r in rows]
+            "hours": hours,
+            "min_temperature": min_temp,
+            "max_temperature": max_temp,
+            "items": items
         }
 
 @app.get("/api/v1/admin/stats/distance-history")

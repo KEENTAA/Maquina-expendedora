@@ -13,8 +13,8 @@ import 'presentation/controllers/admin_dashboard_controller.dart';
 import 'presentation/controllers/audit_controller.dart';
 import 'presentation/controllers/notification_controller.dart';
 import 'presentation/screens/auth/login_screen.dart';
-import 'presentation/screens/dashboard/dashboard_screen.dart';
 import 'presentation/screens/dashboard/main_layout_screen.dart';
+import 'presentation/widgets/animated_grog_frog.dart';
 
 class GrogApp extends StatelessWidget {
   const GrogApp({super.key});
@@ -55,7 +55,7 @@ class GrogApp extends StatelessWidget {
         ),
       ],
       child: MaterialApp(
-        title: 'Grog Wallet',
+        title: 'Grog',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4F46E5)),
@@ -76,8 +76,35 @@ class _AuthGate extends StatelessWidget {
     return Consumer<AuthController>(
       builder: (context, auth, _) {
         if (auth.loading) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
+          return Scaffold(
+            backgroundColor: Colors.white,
+            body: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const AnimatedGrogFrog(size: 130),
+                  const SizedBox(height: 24),
+                  const Text(
+                    'GROG',
+                    style: TextStyle(
+                      fontSize: 32,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFF4F46E5),
+                      letterSpacing: 2.0,
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  const SizedBox(
+                    width: 44,
+                    height: 44,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 3,
+                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF4F46E5)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           );
         }
         if (auth.isAuthenticated) {

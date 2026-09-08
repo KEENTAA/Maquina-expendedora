@@ -9,6 +9,7 @@ abstract class PurchaseRepository {
   Future<ProductTransaction> initTransaction(
     String machineId,
     String? productId,
-    double? amount,
-  );
+    double? amount, {
+    String paymentMethod = 'QR',
+  });
 }

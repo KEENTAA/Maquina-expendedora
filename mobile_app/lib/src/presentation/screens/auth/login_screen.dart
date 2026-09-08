@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../../../core/config/app_config.dart';
 import '../../controllers/auth_controller.dart';
 import '../dashboard/main_layout_screen.dart';
+import '../../widgets/animated_grog_frog.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -27,6 +28,9 @@ class _LoginScreenState extends State<LoginScreen> {
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
 
+  final _passwordFocusNode = FocusNode();
+  bool _isPasswordFocused = false;
+
   bool _rememberPassword = false;
   bool _fingerprintAvailable = false;
   bool _fingerprintEnabled = false;
@@ -35,6 +39,11 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
+    _passwordFocusNode.addListener(() {
+      setState(() {
+        _isPasswordFocused = _passwordFocusNode.hasFocus;
+      });
+    });
     _loadSavedState();
   }
 
@@ -77,6 +86,7 @@ class _LoginScreenState extends State<LoginScreen> {
     _emailCtrl.dispose();
     _passwordCtrl.dispose();
     _ipCtrl.dispose();
+    _passwordFocusNode.dispose();
     super.dispose();
   }
 
@@ -121,7 +131,6 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _loginWithFingerprint() async {
     final savedEmail = await _secureStorage.read(key: 'saved_email');
     final savedPassword = await _secureStorage.read(key: 'saved_password');
-    final savedIp = await _secureStorage.read(key: 'saved_ip');
 
     // Case 1: Credentials already saved
     if (savedEmail != null && savedPassword != null && savedPassword.isNotEmpty) {
@@ -247,22 +256,24 @@ class _LoginScreenState extends State<LoginScreen> {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 48),
-                    const Icon(
-                      Icons.local_drink_rounded,
-                      size: 80,
-                      color: Color(0xFF4F46E5),
-                    ),
-                    const SizedBox(height: 24),
-                    Text(
-                      'Grog Wallet',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.headlineMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        color: Colors.black87,
+                    const SizedBox(height: 36),
+                    Center(
+                      child: AnimatedGrogFrog(
+                        size: 110,
+                        isPasswordFocused: _isPasswordFocused,
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 20),
+                    Text(
+                      'GROG',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.headlineMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        color: Colors.black87,
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
                     Text(
                       'Bienvenido de nuevo. Ingresa tus datos.',
                       textAlign: TextAlign.center,
@@ -270,7 +281,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         color: Colors.grey.shade600,
                       ),
                     ),
-                    const SizedBox(height: 40),
+                    const SizedBox(height: 36),
                     TextFormField(
                       controller: _emailCtrl,
                       keyboardType: TextInputType.emailAddress,
@@ -293,6 +304,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _passwordCtrl,
+                      focusNode: _passwordFocusNode,
                       obscureText: true,
                       decoration: InputDecoration(
                         labelText: 'Contraseña',

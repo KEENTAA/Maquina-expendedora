@@ -23,6 +23,18 @@ class HttpApiClient {
     return _decodeObject(response);
   }
 
+  Future<List<dynamic>> getJsonList(
+    Uri uri, {
+    Map<String, String>? headers,
+    int retries = 2,
+  }) async {
+    final response = await _withRetry(
+      () => _client.get(uri, headers: headers),
+      retries: retries,
+    );
+    return _decodeList(response);
+  }
+
   Future<Map<String, dynamic>> postJson(
     Uri uri, {
     Map<String, String>? headers,
@@ -111,6 +123,16 @@ class HttpApiClient {
       final decoded = jsonDecode(response.body);
       if (decoded is Map<String, dynamic>) return decoded;
       throw const AppException('Respuesta inválida del servidor.');
+    } on FormatException {
+      throw const AppException('No se pudo parsear la respuesta del servidor.');
+    }
+  }
+
+  List<dynamic> _decodeList(http.Response response) {
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is List<dynamic>) return decoded;
+      throw const AppException('Respuesta inválida del servidor (se esperaba una lista).');
     } on FormatException {
       throw const AppException('No se pudo parsear la respuesta del servidor.');
     }

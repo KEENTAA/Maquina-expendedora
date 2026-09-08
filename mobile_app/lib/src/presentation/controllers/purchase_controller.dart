@@ -33,6 +33,7 @@ class PurchaseController extends ChangeNotifier {
     String machineId, {
     String? productId,
     double? amount,
+    String paymentMethod = 'QR',
   }) async {
     loading = true;
     error = null;
@@ -43,6 +44,7 @@ class PurchaseController extends ChangeNotifier {
         machineId,
         productId,
         amount,
+        paymentMethod: paymentMethod,
       );
       return true;
     } catch (e) {

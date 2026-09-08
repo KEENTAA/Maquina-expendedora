@@ -8,6 +8,8 @@ list(APPEND FLUTTER_PLUGIN_LIST
   flutter_secure_storage_windows
   geolocator_windows
   local_auth_windows
+  printing
+  share_plus
   url_launcher_windows
 )
 

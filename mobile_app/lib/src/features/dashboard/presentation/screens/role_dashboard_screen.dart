@@ -1,7 +1,10 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:nfc_manager/ndef_record.dart';
 import 'package:nfc_manager/nfc_manager.dart';
+import 'package:nfc_manager/nfc_manager_android.dart';
+import 'package:nfc_manager/nfc_manager_ios.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../../core/network/api_client.dart';
@@ -59,31 +62,48 @@ class _RoleDashboardScreenState extends State<RoleDashboardScreen> with SingleTi
       bool isAvailable = await NfcManager.instance.isAvailable();
       if (!isAvailable) return;
 
-      NfcManager.instance.startSession(onDiscovered: (NfcTag tag) async {
-        try {
-          final ndef = Ndef.from(tag);
-          if (ndef == null || ndef.cachedMessage == null) return;
-          
-          String payload = '';
-          for (var record in ndef.cachedMessage!.records) {
-            if (record.typeNameFormat == NdefTypeNameFormat.nfcWellknown) {
-              if (record.payload.isNotEmpty) {
-                int langCodeLen = record.payload.first & 0x3F;
-                payload = utf8.decode(record.payload.sublist(langCodeLen + 1));
+      NfcManager.instance.startSession(
+        pollingOptions: {
+          NfcPollingOption.iso14443,
+          NfcPollingOption.iso15693,
+          NfcPollingOption.iso18092,
+        },
+        onDiscovered: (NfcTag tag) async {
+          try {
+            NdefMessage? message;
+            final ndefAndroid = NdefAndroid.from(tag);
+            if (ndefAndroid != null) {
+              message = ndefAndroid.cachedNdefMessage ?? await ndefAndroid.getNdefMessage();
+            } else {
+              final ndefIos = NdefIos.from(tag);
+              if (ndefIos != null) {
+                message = ndefIos.cachedNdefMessage ?? await ndefIos.readNdef();
               }
             }
-          }
 
-          if (payload.isNotEmpty) {
-            final String machineId = payload.trim();
-            if (mounted) {
-              _showNfcPurchasePanel(machineId);
+            if (message == null) return;
+            
+            String payload = '';
+            for (var record in message.records) {
+              if (record.typeNameFormat == TypeNameFormat.wellKnown) {
+                if (record.payload.isNotEmpty) {
+                  int langCodeLen = record.payload.first & 0x3F;
+                  payload = utf8.decode(record.payload.sublist(langCodeLen + 1));
+                }
+              }
             }
+
+            if (payload.isNotEmpty) {
+              final String machineId = payload.trim();
+              if (mounted) {
+                _showNfcPurchasePanel(machineId);
+              }
+            }
+          } catch (e) {
+            // ignore
           }
-        } catch (e) {
-          // ignore
-        }
-      });
+        },
+      );
     } catch (e) {
       // ignore
     }
@@ -556,7 +576,7 @@ class _RoleDashboardScreenState extends State<RoleDashboardScreen> with SingleTi
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 ListTile(
-                  leading: const Icon(Icons.vending_machine, size: 40),
+                  leading: const Icon(Icons.local_convenience_store_rounded, size: 40),
                   title: Text(m['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
                   subtitle: Text('ID: $machineId | Estado: ${m['status']}'),
                   trailing: Row(

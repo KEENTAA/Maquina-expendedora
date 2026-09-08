@@ -68,6 +68,7 @@ class _CartCheckoutScreenState extends State<CartCheckoutScreen> {
           widget.machineId,
           productId: productId,
           amount: price,
+          paymentMethod: 'NFC',
         );
 
         if (success && purchase.transaction != null) {

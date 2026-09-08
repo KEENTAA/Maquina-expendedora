@@ -116,7 +116,7 @@ class _PaymentConfirmationScreenState extends State<PaymentConfirmationScreen> {
                                       context
                                           .read<PurchaseController>()
                                           .transaction!;
-                                  await Navigator.of(context).push(
+                                  await Navigator.of(context).pushReplacement(
                                     MaterialPageRoute(
                                       builder:
                                           (_) => PurchaseResultScreen(
@@ -124,6 +124,7 @@ class _PaymentConfirmationScreenState extends State<PaymentConfirmationScreen> {
                                           ),
                                     ),
                                   );
+
                                 },
                         child: Text(
                           purchase.loading ? 'Procesando...' : 'Pagar ahora',

@@ -54,10 +54,13 @@ services:
 
   orchestrator-service:
     build: ./transaction-orchestrator-service
+    volumes:
+      - ./transaction-orchestrator-service/app:/app/app
     env_file: .env
     ports:
       - "8010:8010"
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8010
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
+
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,10 +71,12 @@ services:
 
   vending-service:
     build: ./vending-service
+    volumes:
+      - ./vending-service/app:/app/app
     env_file: .env
     ports:
       - "8040:8040"
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8040
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8040 --reload
     depends_on:
       postgres:
         condition: service_healthy

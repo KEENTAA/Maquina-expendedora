@@ -14,4 +14,19 @@ class WalletMovement {
     this.fromEmail,
     this.toEmail,
   });
+
+  bool get isIncome {
+    final t = type.toLowerCase();
+    if (t == 'income' || t == 'deposit' || t == 'recharge') {
+      return true;
+    }
+    if (t == 'payment') {
+      return false;
+    }
+    if (t == 'transfer') {
+      // Si no hay toEmail registrado o toEmail coincide con el usuario, se toma como ingreso
+      return toEmail == null;
+    }
+    return false;
+  }
 }

@@ -25,10 +25,10 @@ Preferences preferences;
 
 const byte ROWS = 4, COLS = 4;
 char keys[ROWS][COLS] = {
-  {'1','2','3','A'},
-  {'4','5','6','B'},
-  {'7','8','9','C'},
-  {'*','0','#','D'}
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
 };
 byte rowPins[ROWS] = {26, 25, 33, 32};
 byte colPins[COLS] = {13, 12, 14, 27};
@@ -58,13 +58,14 @@ String picoNfcUid     = "";    // Último UID NFC recibido del Pico WH
 // ─── VARIABLES DE DISTANCIA (ahora vienen del Pico WH) ───────────────────────
 float distanciaInicial = 0.0, distanciaFinal = 0.0;
 float prevM1 = 0.0, prevM2 = 0.0;
-const float UMBRAL_CAIDA_CM = 3.0;
+const float REPOSO_MIN_CM = 30.0; // Margen de reposo / bandeja vacía: 30.0 a 35.0 cm
+const float REPOSO_MAX_CM = 35.0; // Menor a 30cm o mayor a 35cm -> PRODUCTO ENTREGADO
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ================= CONFIGURACION SISTEMA ==================
 const char* WIFI_SSID     = "ar-HP-Laptop-15-da2xxx";
 const char* WIFI_PASSWORD = "123456789";
-String SERVER_IP          = "68.211.144.";
+String SERVER_IP          = "10.42.0.1";
 const char* MACHINE_ID    = "MACHINE-001";
 const int   WEBHOOK_PORT  = 8081;
 const unsigned long POLL_INTERVAL_MS     = 1500;
@@ -73,18 +74,24 @@ const unsigned long TELEMETRY_INTERVAL_MS = 5000;
 
 WebServer webhookServer(WEBHOOK_PORT);
 String currentTxId = "", inputCodigo = "", precioSeleccionado = "10.00";
+String currentSessionCode = "-----";
+int currentCodeSecondsLeft = 45;
 unsigned long lastPoll = 0;
 unsigned long lastPollCommands = 0;
 unsigned long lastTelemetry    = 0;
 unsigned long lastActivityTime = 0;
+unsigned long lastSessionCodePoll = 0;
+unsigned long lastPendingActionPoll = 0;
+unsigned long lastCatalogPoll = 0;
 bool webhookPaymentPending = false;
 bool waitingForPayment = false;
 
 String baseUrl() { return String("http://") + SERVER_IP + ":8010"; }
 String vendingUrl() { return String("http://") + SERVER_IP + ":8040"; }
 
+
 // --- UTILIDADES ---
-void mostrarCatalogo(); // Prototipo
+void mostrarCatalogo(bool limpiarPantallaCompleta = true); // Prototipo
 
 void resetState() {
   inputCodigo = "";
@@ -243,31 +250,41 @@ void procesarPicoWH() {
 
 /**
  * Solicita una medida de distancia urgente al Pico WH y espera respuesta.
- * Devuelve distancia en cm, o el último valor conocido si hay timeout.
+ * Limpia el buffer previo para evitar datos residuales en la pila UART.
+ * Devuelve distancia en cm, o -1.0 si hay timeout.
  */
 float medirDistancia() {
+  // 1. Limpiar buffer viejo acumulado en la pila UART
+  while (PicoWH.available()) {
+    PicoWH.read();
+  }
+
+  // 2. Enviar orden de medición
   PicoWH.println("MEDIR");
   unsigned long t = millis();
   String buf = "";
-  while (millis() - t < 500) {   // Esperar máximo 500 ms
+  
+  // 3. Esperar respuesta de la Pico WH (máximo 200 ms)
+  while (millis() - t < 200) {
     while (PicoWH.available()) {
       char c = PicoWH.read();
       if (c == '\n') {
         buf.trim();
         if (buf.startsWith("DIST:")) {
-          picoDistancia = buf.substring(5).toFloat();
-          Serial.printf("[PICO] Dist urgente: %.1f cm\n", picoDistancia);
-          return picoDistancia;
+          float dist = buf.substring(5).toFloat();
+          if (dist > 0.0) {
+            picoDistancia = dist;
+            return picoDistancia;
+          }
         }
         buf = "";
       } else {
         buf += c;
       }
     }
-    delay(5);
+    delay(2);
   }
-  Serial.println("[PICO] Timeout distancia, usando ultimo valor.");
-  return picoDistancia > 0 ? picoDistancia : 400.0;
+  return -1.0; // Timeout real
 }
 
 void dibujarMonitores(float temp = -1.0) {
@@ -312,10 +329,59 @@ void enviarTelemetria() {
   http.end();
 }
 
-void mostrarCatalogo() {
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_CYAN); tft.setTextSize(2); tft.setCursor(10, 10); tft.println("GROG VENDING");
-  tft.drawFastHLine(0, 35, tft.width(), TFT_WHITE);
+void dibujarBannerCodigo() {
+  // Banner de emparejamiento superior
+  tft.fillRect(0, 0, tft.width(), 38, TFT_NAVY);
+  tft.drawFastHLine(0, 38, tft.width(), TFT_WHITE);
+  
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(6, 6);
+  tft.print("APP GROG: COMPRA CON CODIGO");
+  
+  tft.setTextSize(2);
+  tft.setCursor(6, 18);
+  tft.setTextColor(TFT_YELLOW);
+  tft.printf("PIN: %s", currentSessionCode.c_str());
+  
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_CYAN);
+  tft.setCursor(tft.width() - 55, 22);
+  tft.printf("%ds", currentCodeSecondsLeft);
+}
+
+void fetchSessionCode() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  HTTPClient http;
+  http.setTimeout(3000);
+  String url = vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/session-code";
+  http.begin(url);
+  int httpCode = http.GET();
+  if (httpCode == 200) {
+    String payload = http.getString();
+    int cPos = payload.indexOf("\"code\":\"");
+    if (cPos != -1) {
+      int cStart = cPos + 8;
+      currentSessionCode = payload.substring(cStart, payload.indexOf("\"", cStart));
+    }
+    int sPos = payload.indexOf("\"seconds_left\":");
+    if (sPos != -1) {
+      int sStart = payload.indexOf(":", sPos) + 1;
+      while (sStart < payload.length() && payload[sStart] == ' ') sStart++;
+      int sEnd = sStart;
+      while (sEnd < payload.length() && payload[sEnd] >= '0' && payload[sEnd] <= '9') sEnd++;
+      currentCodeSecondsLeft = payload.substring(sStart, sEnd).toInt();
+    }
+  }
+  http.end();
+}
+
+void mostrarCatalogo(bool limpiarPantallaCompleta) {
+  if (limpiarPantallaCompleta) {
+    tft.fillScreen(TFT_BLACK);
+    fetchSessionCode();
+    dibujarBannerCodigo();
+  }
   
   if (WiFi.status() != WL_CONNECTED) {
     tft.setTextColor(TFT_RED); tft.setCursor(10, 50); tft.println("SIN CONEXION WIFI");
@@ -323,19 +389,19 @@ void mostrarCatalogo() {
   }
 
   HTTPClient http;
-  http.setTimeout(10000); 
-  String url = vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/inventory";
-  
-  // Serial.print("PIDIENDO CATÁLOGO A: "); Serial.println(url);
+  http.setTimeout(4000); 
+  String url = vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/inventory?include_images=false&only_enabled=true";
   
   http.begin(url);
   int httpCode = http.GET();
   
+  // Limpiar solo el área de productos entre banner y pie de pantalla
+  tft.fillRect(0, 39, tft.width(), tft.height() - 39 - 45, TFT_BLACK);
+
   if (httpCode == 200) {
     String payload = http.getString(); 
-    // Serial.println("RESPUESTA RECIBIDA.");
-    int pos = 0, y = 50;
-    while ((pos = payload.indexOf("\"slot\":", pos)) != -1 && y < (tft.height() - 40)) {
+    int pos = 0, y = 48;
+    while ((pos = payload.indexOf("\"slot\":", pos)) != -1 && y < (tft.height() - 45)) {
       yield(); 
       int sS = payload.indexOf("\"", pos + 7) + 1; 
       String slot = payload.substring(sS, payload.indexOf("\"", sS));
@@ -349,12 +415,24 @@ void mostrarCatalogo() {
       while(pE < payload.length() && payload[pE] != ',' && payload[pE] != '}' && payload[pE] != '\"' && payload[pE] != ' ') pE++;
       String price = payload.substring(pS, pE);
       
-      tft.setCursor(10, y); tft.setTextSize(2);
-      tft.setTextColor(TFT_YELLOW); tft.print(slot);
-      tft.setTextColor(TFT_WHITE); tft.print(": "); 
-      tft.print(name.substring(0, 10)); 
-      tft.setTextColor(TFT_GREEN); tft.print(" Bs"); tft.println(price);
-      y += 30; pos = pPos + 5; 
+      // Doble verificación: comprobar is_enabled en este bloque
+      int ePos = payload.indexOf("\"is_enabled\":", pos);
+      bool isEnabled = true;
+      if (ePos != -1 && ePos < pos + 300) {
+        if (payload.indexOf("false", ePos) != -1 && payload.indexOf("false", ePos) < ePos + 10) {
+          isEnabled = false;
+        }
+      }
+
+      if (isEnabled) {
+        tft.setCursor(10, y); tft.setTextSize(2);
+        tft.setTextColor(TFT_YELLOW); tft.print(slot);
+        tft.setTextColor(TFT_WHITE); tft.print(": "); 
+        tft.print(name.substring(0, 9)); 
+        tft.setTextColor(TFT_GREEN); tft.print(" Bs"); tft.println(price);
+        y += 26;
+      }
+      pos = pPos + 5; 
     }
   } else {
     Serial.print("ERROR HTTP: "); Serial.println(httpCode);
@@ -374,6 +452,7 @@ void mostrarCatalogo() {
 
 bool lightsOn = false;
 
+
 void toggleLights() {
   lightsOn = !lightsOn;
   digitalWrite(LED_PIN, lightsOn ? HIGH : LOW);
@@ -386,22 +465,27 @@ void registrarIntencionYMostrarQR() {
   
   // 1. Obtener info del slot y verificar si está habilitado
   String slotUrl = vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/slots/" + inputCodigo;
+  http.setTimeout(4000);
   http.begin(slotUrl);
   int httpCode = http.GET();
   bool canBuy = false;
   
+  Serial.printf("[SLOT-CHECK] Consultando: %s | HTTP: %d\n", slotUrl.c_str(), httpCode);
   if (httpCode == 200) {
     String payload = http.getString(); 
+    Serial.printf("[SLOT-CHECK] Payload: %s\n", payload.c_str());
     // Buscar "is_enabled":true
-    if (payload.indexOf("\"is_enabled\":true") != -1) {
+    if (payload.indexOf("\"is_enabled\":true") != -1 || payload.indexOf("\"is_enabled\": true") != -1) {
       canBuy = true;
       // Extraer precio
       int pP = payload.indexOf("\"price\":"); 
-      int pS = payload.indexOf(":", pP) + 1;
-      while(pS < payload.length() && (payload[pS] == ' ' || payload[pS] == '\"')) pS++;
-      int pE = pS;
-      while(pE < payload.length() && payload[pE] != ',' && payload[pE] != '}' && payload[pE] != '\"' && payload[pE] != ' ') pE++;
-      precioSeleccionado = payload.substring(pS, pE);
+      if (pP != -1) {
+        int pS = payload.indexOf(":", pP) + 1;
+        while(pS < payload.length() && (payload[pS] == ' ' || payload[pS] == '\"')) pS++;
+        int pE = pS;
+        while(pE < payload.length() && payload[pE] != ',' && payload[pE] != '}' && payload[pE] != '\"' && payload[pE] != ' ') pE++;
+        precioSeleccionado = payload.substring(pS, pE);
+      }
     }
   }
   http.end();
@@ -502,16 +586,18 @@ void processPaidTransaction(String txId) {
     // Medida a alta velocidad
     float d = medirDistancia();
     
-    // Mostramos cada medida en el serial para análisis
-    Serial.printf("[RAFAGA] Dist: %.2f cm\n", d);
+    // Mostramos cada medida en el serial para análisis si es válida
+    if (d > 0.0) {
+      Serial.printf("[RAFAGA] Dist: %.2f cm\n", d);
 
-    if (d > 0.5 && d < 350.0) {
-      // Buscamos el valor más bajo (M2)
-      if (d < distanciaFinal) {
+      // Solo procesamos lecturas físicas coherentes
+      if (d >= 2.0 && d <= 50.0) {
         distanciaFinal = d;
-        // Si detectamos algo por debajo del umbral, ya podemos marcarlo como éxito interno
-        if (distanciaFinal < (distanciaInicial - UMBRAL_CAIDA_CM)) {
+
+        // Regla: si la distancia es menor a 30cm o mayor a 35cm, cayó un producto
+        if (d < REPOSO_MIN_CM || d > REPOSO_MAX_CM) {
           detectado = true;
+          Serial.printf("[SENSOR] 🎯 ¡Producto detectado fuera de reposo! (Medida: %.2f cm)\n", d);
         }
       }
     }
@@ -523,16 +609,23 @@ void processPaidTransaction(String txId) {
       if (resp == "DONE") Serial.println("[SLAVE] Motor terminó su giro.");
     }
 
-    delay(10); // Pausa mínima para no saturar el procesador pero mantener ráfaga alta
+    delay(20); // Pausa óptima para la ráfaga
   }
 
   // 3. DETERMINAR RESULTADO FINAL
-  // Si en algún momento de la ráfaga el valor bajó lo suficiente, detectado será true
-  if (distanciaFinal < (distanciaInicial - UMBRAL_CAIDA_CM)) {
+  // Si la distancia final quedó dentro del margen de reposo (30 a 35 cm) y nunca hubo caída detectada:
+  // la bandeja sigue vacía en reposo -> NO SE ENTREGÓ EL PRODUCTO.
+  if (distanciaFinal >= REPOSO_MIN_CM && distanciaFinal <= REPOSO_MAX_CM) {
+    detectado = false;
+    Serial.printf("[SENSOR] ⚠️ M2 final (%.2f cm) está en margen de reposo (%.1f-%.1f cm). NO ENTREGADO.\n", 
+                  distanciaFinal, REPOSO_MIN_CM, REPOSO_MAX_CM);
+  } else if (distanciaFinal > 0.5 && (distanciaFinal < REPOSO_MIN_CM || distanciaFinal > REPOSO_MAX_CM)) {
+    // Si la lectura final quedó alterada fuera de [30, 35] cm -> Confirmar entrega
     detectado = true;
   }
 
-  Serial.printf("[SENSOR] RESUMEN -> M1 (Base): %.2f | M2 (Min): %.2f\n", distanciaInicial, distanciaFinal);
+  Serial.printf("[SENSOR] RESUMEN -> M1 (Base): %.2f | M2 (Final): %.2f | Margen Reposo: %.1f-%.1f cm | Entregado: %s\n", 
+                distanciaInicial, distanciaFinal, REPOSO_MIN_CM, REPOSO_MAX_CM, detectado ? "SI" : "NO");
 
   // MOSTRAR RESULTADO EN TFT
   tft.fillScreen(TFT_BLACK);
@@ -725,6 +818,45 @@ void loop() {
       http.end();
     }
   }
+
+  // Polling de acciones pendientes desde la App (ej. Selección remota de slot / Generar QR)
+  if (!waitingForPayment && (now - lastPendingActionPoll >= 1000)) {
+    lastPendingActionPoll = now;
+    if (WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      http.begin(vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/pending-action");
+      if (http.GET() == 200) {
+        String act = http.getString();
+        if (act.indexOf("\"action\":\"generate_qr\"") != -1) {
+          int sPos = act.indexOf("\"slot\":\"");
+          if (sPos != -1) {
+            int start = sPos + 8;
+            String slot = act.substring(start, act.indexOf("\"", start));
+            if (slot.length() > 0) {
+              Serial.printf("[APP-REMOTE] Slot seleccionado desde celular: %s\n", slot.c_str());
+              inputCodigo = slot;
+              registrarIntencionYMostrarQR();
+            }
+          }
+        }
+      }
+      http.end();
+    }
+  }
+
+  // Refresco periódico del catálogo cada 3s cuando esté en pantalla principal (sin parpadeo)
+  if (!waitingForPayment && inputCodigo.length() == 0 && (now - lastCatalogPoll >= 3000)) {
+    lastCatalogPoll = now;
+    mostrarCatalogo(false);
+  }
+
+  // Refresco periódico del código de sesión dinámico cada 5s cuando esté en catálogo
+  if (!waitingForPayment && inputCodigo.length() == 0 && (now - lastSessionCodePoll >= 5000)) {
+    lastSessionCodePoll = now;
+    fetchSessionCode();
+    dibujarBannerCodigo();
+  }
+
 
   char key = keypad.getKey();
   if (key) {

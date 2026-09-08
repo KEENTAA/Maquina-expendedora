@@ -26,12 +26,53 @@ class VendingApiService {
     );
   }
 
-  Future<Map<String, dynamic>> updateSlotStatus(String machineId, String slotOrId, bool isEnabled, String? slotType) {
+  Future<Map<String, dynamic>> updateSlotStatus(String machineId, String slotOrId, bool isEnabled, String? slotType, {String? productName, String? newSlot}) {
+    final Map<String, dynamic> body = {
+      'is_enabled': isEnabled,
+      'slot_type': slotType,
+    };
+    if (productName != null) {
+      body['product_name'] = productName;
+    }
+    if (newSlot != null) {
+      body['new_slot'] = newSlot;
+    }
     return _http.patchJson(
       Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/$machineId/inventory/$slotOrId/status'),
-      body: {'is_enabled': isEnabled, 'slot_type': slotType},
+      body: body,
     );
   }
+
+  Future<Map<String, dynamic>> createSlot(String machineId, {
+    required String slot,
+    required String productName,
+    required double price,
+    required int stock,
+    int capacity = 20,
+    String slotType = 'soda',
+  }) {
+    return _http.postJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/$machineId/slots'),
+      body: {
+        'slot': slot,
+        'product_name': productName,
+        'price': price,
+        'stock': stock,
+        'capacity': capacity,
+        'slot_type': slotType,
+      },
+    );
+  }
+
+  Future<Map<String, dynamic>> reorderSlots(String machineId, List<String> orderedSlots) {
+    return _http.postJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/$machineId/reorder-slots'),
+      body: {
+        'ordered_slots': orderedSlots,
+      },
+    );
+  }
+
 
   Future<Map<String, dynamic>> getBanner() {
     return _http.getJson(
@@ -73,4 +114,44 @@ class VendingApiService {
     );
   }
 
+  Future<Map<String, dynamic>> getSessionCode(String machineId) {
+    return _http.getJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/$machineId/session-code'),
+    );
+  }
+
+  Future<Map<String, dynamic>> verifyMachineCode(String code, {String machineId = 'MACHINE-001'}) {
+    return _http.postJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/$machineId/verify-code'),
+      body: {'code': code},
+    );
+  }
+
+  Future<Map<String, dynamic>> selectSlot(String machineId, String slot) {
+    return _http.postJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/$machineId/select-slot'),
+      body: {'slot': slot},
+    );
+  }
+
+  Future<Map<String, dynamic>> getMachineConfig(String machineId) {
+    return _http.getJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/$machineId/config'),
+    );
+  }
+
+  Future<Map<String, dynamic>> updateMachineConfig(String machineId, {int? codeTtl, String? wifiSsid, String? wifiPassword, String? serverIp}) {
+    final Map<String, dynamic> body = {};
+    if (codeTtl != null) body['code_ttl'] = codeTtl;
+    if (wifiSsid != null) body['wifi_ssid'] = wifiSsid;
+    if (wifiPassword != null) body['wifi_password'] = wifiPassword;
+    if (serverIp != null) body['server_ip'] = serverIp;
+
+    return _http.putJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/$machineId/config'),
+      body: body,
+    );
+  }
+
 }
+

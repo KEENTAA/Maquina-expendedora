@@ -56,6 +56,6 @@ class AuthApiService {
     return _http.postJson(
       Uri.parse('${AppConfig.authUrl}/api/v1/auth/logout'),
       body: {'email': email},
-    ).catchError((_) => {});
+    ).catchError((_) => <String, dynamic>{});
   }
 }

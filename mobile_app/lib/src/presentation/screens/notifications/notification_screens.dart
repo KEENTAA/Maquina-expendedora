@@ -1,9 +1,32 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import '../../controllers/admin_dashboard_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../controllers/notification_controller.dart';
 import '../../../domain/entities/app_notification.dart';
+
+final Map<String, Uint8List> _notifImageCache = {};
+
+Uint8List? _decodeBase64Safe(String? base64Str) {
+  if (base64Str == null || base64Str.isEmpty) return null;
+  if (_notifImageCache.containsKey(base64Str)) {
+    return _notifImageCache[base64Str];
+  }
+  try {
+    String cleanStr = base64Str.trim();
+    if (cleanStr.contains(',')) {
+      cleanStr = cleanStr.split(',').last.trim();
+    }
+    cleanStr = cleanStr.replaceAll(RegExp(r'\s+'), '');
+    final bytes = base64Decode(cleanStr);
+    if (_notifImageCache.length > 50) _notifImageCache.clear();
+    _notifImageCache[base64Str] = bytes;
+    return bytes;
+  } catch (_) {
+    return null;
+  }
+}
 
 class NotificationListScreen extends StatelessWidget {
   const NotificationListScreen({super.key});
@@ -73,7 +96,7 @@ class _NotificationTile extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: _getColor(notification.type).withOpacity(0.1),
+          backgroundColor: _getColor(notification.type).withValues(alpha: 0.1),
           child: Icon(_getIcon(notification.type), color: _getColor(notification.type)),
         ),
         title: Text(
@@ -217,19 +240,70 @@ class _AdNotificationTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    const primaryColor = Color(0xFF4F46E5);
+    final imageBytes = _decodeBase64Safe(imageBase64);
+
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      elevation: 4,
-      color: Colors.amber.shade50, // Color destacado
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.amber.shade200)),
+      elevation: 0,
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: primaryColor.withValues(alpha: 0.25), width: 1.2),
+      ),
       child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: Colors.amber.withOpacity(0.2),
-          child: const Icon(Icons.star, color: Colors.orange),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        leading: Container(
+          width: 46,
+          height: 46,
+          decoration: BoxDecoration(
+            color: primaryColor.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: imageBytes != null
+                ? Image.memory(
+                    imageBytes,
+                    width: 46,
+                    height: 46,
+                    fit: BoxFit.cover,
+                    gaplessPlayback: true,
+                  )
+                : const Icon(Icons.star_rounded, color: primaryColor, size: 26),
+          ),
         ),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text(concept, maxLines: 2, overflow: TextOverflow.ellipsis),
-        trailing: const Icon(Icons.chevron_right),
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: primaryColor.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: const Text(
+                'DESTACADO',
+                style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: primaryColor),
+              ),
+            ),
+          ],
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            concept,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+          ),
+        ),
+        trailing: const Icon(Icons.chevron_right_rounded, color: Colors.grey),
         onTap: () {
           Navigator.of(context).push(
             MaterialPageRoute(
@@ -251,33 +325,40 @@ class _AdDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final imageBytes = _decodeBase64Safe(imageBase64);
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Anuncio')),
+      appBar: AppBar(
+        title: const Text('Anuncio Destacado'),
+        backgroundColor: const Color(0xFF4F46E5),
+        foregroundColor: Colors.white,
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (imageBase64.isNotEmpty)
+            if (imageBytes != null)
               ClipRRect(
                 borderRadius: BorderRadius.circular(16),
                 child: Image.memory(
-                  base64Decode(imageBase64),
+                  imageBytes,
                   width: double.infinity,
-                  height: 250,
+                  height: 220,
                   fit: BoxFit.cover,
                   gaplessPlayback: true,
-                )
+                ),
               ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
             Text(
               title,
-              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
             ),
-            const Divider(height: 32),
+            const SizedBox(height: 8),
+            const Divider(height: 24),
             Text(
               concept,
-              style: const TextStyle(fontSize: 18, height: 1.5),
+              style: TextStyle(fontSize: 16, height: 1.6, color: Colors.grey.shade800),
             ),
           ],
         ),

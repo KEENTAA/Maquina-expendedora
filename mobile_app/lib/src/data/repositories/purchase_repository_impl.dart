@@ -25,12 +25,14 @@ class PurchaseRepositoryImpl implements PurchaseRepository {
   Future<ProductTransaction> initTransaction(
     String machineId,
     String? productId,
-    double? amount,
-  ) async {
+    double? amount, {
+    String paymentMethod = 'QR',
+  }) async {
     final data = await _orchestratorApi.initTransaction(
       machineId: machineId,
       productId: productId,
       amount: amount,
+      paymentMethod: paymentMethod,
     );
     return _mapTransaction(data);
   }
@@ -63,13 +65,14 @@ class PurchaseRepositoryImpl implements PurchaseRepository {
       latest = await getTransaction(transactionId);
     }
 
-    for (var i = 0; i < 8; i++) {
+    for (var i = 0; i < 15; i++) {
       if (_isFinal(latest.state)) break;
       await Future.delayed(const Duration(seconds: 2));
       latest = await getTransaction(transactionId);
     }
     return latest;
   }
+
 
   bool _isFinal(ProductTransactionState state) {
     return state == ProductTransactionState.completed ||

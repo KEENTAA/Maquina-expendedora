@@ -13,9 +13,10 @@ RESPONSABILIDADES:
 # ═══════════════════════════════════════════════════
 # ── FLAGS DE PRUEBA Y DIAGNÓSTICO (CONFIGURACIÓN) ──
 # Cambia a True o False según lo que desees activar:
-TEST_COMM_UART_ENABLED = False  # False: modo producción (silencioso y optimizado)
+TEST_COMM_UART_ENABLED = True   # True: activa logs locales en Raspberry Pi / Thonny
 ENABLE_TEMP_READING    = True   # True: lee y envía temperatura DHT11 al Maestro
 ENABLE_NFC             = True   # True: activa lector NFC PN532 (con protección try/except)
+ENABLE_NFC_LOGS        = True   # True: muestra logs detallados de NFC en consola (Thonny)
 # ═══════════════════════════════════════════════════
 
 from machine import Pin, I2C, UART
@@ -40,22 +41,19 @@ ECHO = Pin(9, Pin.IN, Pin.PULL_DOWN)
 TRIG.value(0)
 
 # ─────────────────────────────────────────────
-# PN532 NFC por I2C (solo si ENABLE_NFC es True)
+# PN532 NFC por UART0 (solo si ENABLE_NFC es True)
 # ─────────────────────────────────────────────
-I2C_BUS    = None
-PN532_ADDR = 0x24  # Dirección I2C estándar del PN532
+NFC_UART = None
 
 if ENABLE_NFC:
     try:
-        I2C_BUS = I2C(1, sda=Pin(6), scl=Pin(7), freq=100000)
-        devices = I2C_BUS.scan()
-        print(f"[*] I2C Bus escaneado (GP6/GP7). Dispositivos encontrados: {[hex(d) for d in devices]}")
-        if PN532_ADDR in devices:
-            print(f"[NFC] Dispositivo PN532 encontrado en dirección {hex(PN532_ADDR)}.")
-        else:
-            print(f"[NFC] AVISO: No se detectó el PN532 en {hex(PN532_ADDR)}. Revisa switches (I2C) y cables.")
+        # UART0 en GP0(TX) y GP1(RX)
+        NFC_UART = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1), timeout=10)
+        if ENABLE_NFC_LOGS:
+            print("[NFC] Puerto UART0 inicializado (TX=GP0, RX=GP1) a 115200 baud.")
     except Exception as e:
-        print(f"[NFC] Error al inicializar o escanear I2C: {e}")
+        if ENABLE_NFC_LOGS:
+            print(f"[NFC] Error al inicializar UART: {e}")
 
 # ─────────────────────────────────────────────
 # INTERVALOS DE LECTURA
@@ -107,61 +105,60 @@ def leer_temperatura() -> float:
 
 
 def pn532_send_command(cmd: bytes) -> bool:
-    """Envía un comando formateado con preámbulo, longitud y checksums."""
-    if I2C_BUS is None:
-        print("[I2C] Error: I2C_BUS es None")
+    """Envía un comando formateado con preámbulo, longitud y checksums por UART."""
+    if NFC_UART is None:
         return False
+        
+    # Limpiar buffer de entrada
+    while NFC_UART.any():
+        NFC_UART.read(NFC_UART.any())
+
     length = len(cmd)
     lcs = (~length + 1) & 0xFF
     dcs = (~sum(cmd) + 1) & 0xFF
     frame = bytearray([0x00, 0x00, 0xFF, length, lcs]) + bytearray(cmd) + bytearray([dcs, 0x00])
+    
     try:
-        I2C_BUS.writeto(PN532_ADDR, frame)
+        NFC_UART.write(frame)
         return True
     except Exception as e:
-        print(f"[I2C] Excepción al escribir en PN532: {e}")
+        # print(f"[NFC-UART] Excepción al escribir en PN532: {e}")
         return False
 
 
-def pn532_wait_ready(timeout_ms=50) -> bool:
-    """Espera a que el bit READY (bit 0) del PN532 esté en 1."""
-    if I2C_BUS is None:
+def pn532_read_ack() -> bool:
+    """Lee y consume la trama de ACK del PN532 por UART."""
+    if NFC_UART is None:
         return False
     start = utime.ticks_ms()
-    while utime.ticks_diff(utime.ticks_ms(), start) < timeout_ms:
-        try:
-            status = I2C_BUS.readfrom(PN532_ADDR, 1)
-            if status and (status[0] & 0x01):
+    buf = b""
+    while utime.ticks_diff(utime.ticks_ms(), start) < 150:
+        if NFC_UART.any():
+            buf += NFC_UART.read(NFC_UART.any())
+            if b"\x00\x00\xff\x00\xff\x00" in buf:
                 return True
-        except Exception:
-            pass
         utime.sleep_ms(2)
     return False
 
 
-def pn532_read_ack() -> bool:
-    """Lee y consume la trama de ACK del PN532."""
-    if not pn532_wait_ready(30):
-        return False
-    try:
-        ack = I2C_BUS.readfrom(PN532_ADDR, 7)
-        if len(ack) >= 7 and ack[1:7] == b"\x00\x00\xff\x00\xff\x00":
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def pn532_read_data(max_len=32, timeout_ms=80) -> list[int] | None:
-    """Espera y lee la trama de datos de respuesta del PN532."""
-    if not pn532_wait_ready(timeout_ms):
+def pn532_read_data(max_len=64, timeout_ms=80) -> list[int] | None:
+    """Espera y lee la trama de datos de respuesta del PN532 por UART."""
+    if NFC_UART is None:
         return None
-    try:
-        raw = I2C_BUS.readfrom(PN532_ADDR, max_len + 1)
-        if raw and (raw[0] & 0x01):
-            return list(raw[1:])
-    except Exception:
-        pass
+    start = utime.ticks_ms()
+    buf = b""
+    while utime.ticks_diff(utime.ticks_ms(), start) < timeout_ms:
+        if NFC_UART.any():
+            buf += NFC_UART.read(NFC_UART.any())
+            # Buscar inicio de trama
+            if b"\x00\x00\xff" in buf:
+                idx = buf.find(b"\x00\x00\xff")
+                if idx + 4 < len(buf):
+                    length = buf[idx + 3]
+                    if len(buf) >= idx + 6 + length + 1:
+                        # Extraer payload
+                        return list(buf[idx+5 : idx+5+length])
+        utime.sleep_ms(5)
     return None
 
 
@@ -178,18 +175,24 @@ def pn532_wakeup():
         wakeup = bytearray([0x55, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x03, 0xFD, 0xD4, 0x14, 0x01, 0x17, 0x00])
         NFC_UART.write(wakeup)
         utime.sleep_ms(50)
+        
+        # 1. SAMConfiguration: Normal mode
+        pn532_send_command(bytes([0xD4, 0x14, 0x01, 0x00]))
+        utime.sleep_ms(20)
         pn532_read_ack()
         pn532_read_data(16, timeout_ms=50)
 
-        # 2. RFConfiguration: MaxRetries (Item 5) = 1 intento pasivo para polling no bloqueante
+        # 2. RFConfiguration: MaxRetries (Item 5) = 1
         pn532_send_command(bytes([0xD4, 0x32, 0x05, 0xFF, 0x01, 0x01]))
         utime.sleep_ms(20)
         pn532_read_ack()
         pn532_read_data(16, timeout_ms=50)
 
-        print("[NFC] PN532 configurado y listo en modo I2C rápido.")
+        if ENABLE_NFC_LOGS:
+            print("[NFC] PN532 despertado y configurado en modo UART rápido.")
     except Exception as e:
-        print(f"[NFC] Error en configuración inicial PN532: {e}")
+        if ENABLE_NFC_LOGS:
+            print(f"[NFC] Error en configuración inicial PN532: {e}")
 
 
 def pn532_build_ndef_url_message(url: str) -> bytes:
@@ -206,18 +209,26 @@ def pn532_build_ndef_url_message(url: str) -> bytes:
     return bytes([(nlen >> 8) & 0xFF, nlen & 0xFF]) + ndef_record
 
 
+def pn532_abort_command():
+    """Envía un ACK limpio para cancelar cualquier comando atascado en el PN532."""
+    if NFC_UART:
+        NFC_UART.write(b'\x00\x00\xFF\x00\xFF\x00')
+        utime.sleep_ms(20)
+
+
 def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> str | None:
     """
     Emula una etiqueta NFC NDEF Type 4 ante el teléfono móvil.
     Genera un token de sesión de 30 segundos y lo entrega al celular para abrir la app.
     """
-    if not ENABLE_NFC or I2C_BUS is None:
+    if not ENABLE_NFC or NFC_UART is None:
         return None
 
     # Generar Token único de 30s basado en timestamp
     now_ms = utime.ticks_ms()
     token = f"TOK{now_ms:08X}"
     url = f"grog://vending/{machine_id}?token={token}&exp=30"
+    # url = f"https://google.com/search?q={token}"
     ndef_file = pn532_build_ndef_url_message(url)
 
     # Capability Container (CC) File (15 bytes estándar Type 4)
@@ -241,27 +252,35 @@ def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> str | None:
         0x20                    # SEL_RES = 0x20 (ISO/IEC 14443-4)
     ]) + bytearray(18) + bytearray(10) + bytearray([0x00, 0x00])
 
+    # print("[NFC-EMU] 🔵 Entrando a Modo Emulación (Target). Esperando teléfono 10s...")
     if not pn532_send_command(bytes(init_cmd)):
+        # print("[NFC-EMU] ❌ Fallo al enviar TgInitAsTarget")
         return None
     if not pn532_read_ack():
-        print("[NFC-EMU] ❌ El módulo NFC no responde. Forzando reinicio (WakeUp)...")
+        # print("[NFC-EMU] ❌ El módulo NFC no responde (¿Desconectado o apagado?). Forzando reinicio (WakeUp)...")
         pn532_wakeup()
         return None
 
-    # Esperar si un celular entra al campo RF
-    init_resp = pn532_read_data(64, timeout_ms=10000)
+    # Esperar si un celular entra al campo RF (tiempo corto no bloqueante para atender UART y sensores)
+    init_resp = pn532_read_data(64, timeout_ms=60)
     if not init_resp:
         pn532_abort_command()
         return None
+        
+    # print(f"[NFC-EMU] 📱 ¡Señal detectada! Respuesta raw: {[hex(x) for x in init_resp]}")
 
     try:
         idx = init_resp.index(0xD5)
         if init_resp[idx + 1] != 0x8D:
+            # print("[NFC-EMU] ⚠️ La respuesta no es 0x8D (no es iniciador).")
             pn532_abort_command()
             return None
     except (ValueError, IndexError):
+        # print("[NFC-EMU] ⚠️ Trama incompleta o corrupta al detectar celular.")
         pn532_abort_command()
         return None
+
+    # print("[NFC-EMU] ✅ Enlace RF establecido con el celular. Esperando comandos APDU...")
 
     # El celular está conectado, responder a las peticiones APDU (ISO 7816-4)
     selected_file = None
@@ -270,17 +289,21 @@ def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> str | None:
     while utime.ticks_diff(utime.ticks_ms(), trans_start) < 3000:
         # 1. TgGetData: Recibir APDU del celular
         if not pn532_send_command(bytes([0xD4, 0x86])):
+            # print("[NFC-EMU] ❌ Fallo al enviar TgGetData")
             break
         if not pn532_read_ack():
+            # print("[NFC-EMU] ❌ No se recibió ACK para TgGetData (Se cortó conexión)")
             break
             
         apdu_resp = pn532_read_data(128, timeout_ms=500)
         if not apdu_resp:
+            # print("[NFC-EMU] ⚠️ El celular no envió comandos APDU a tiempo o se desconectó.")
             break
 
         try:
             apdu_idx = apdu_resp.index(0xD5)
             if apdu_resp[apdu_idx + 1] != 0x87 or apdu_resp[apdu_idx + 2] != 0x00:
+                # print(f"[NFC-EMU] ⚠️ Error en TgGetData (Status {hex(apdu_resp[apdu_idx+2])})")
                 break
             apdu = apdu_resp[apdu_idx + 3 :]
         except (ValueError, IndexError):
@@ -290,51 +313,59 @@ def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> str | None:
             break
 
         cla, ins, p1, p2 = apdu[0], apdu[1], apdu[2], apdu[3]
+        # print(f"[NFC-EMU] 📨 APDU Recibido: CLA={hex(cla)} INS={hex(ins)} P1={hex(p1)} P2={hex(p2)}")
 
         # ── SELECT FILE / APPLICATION ──
         if ins == 0xA4:
             if len(apdu) >= 7 and apdu[4] == 0x07 and apdu[5:12] == [0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01]:
+                # print("[NFC-EMU] 📁 Seleccionando Aplicación NDEF...")
                 selected_file = "NDEF_APP"
                 pn532_send_command(bytes([0xD4, 0x8E, 0x90, 0x00]))
             elif len(apdu) >= 7 and apdu[5:7] == [0xE1, 0x03]:
+                # print("[NFC-EMU] 📄 Seleccionando Capability Container (CC)...")
                 selected_file = "CC"
                 pn532_send_command(bytes([0xD4, 0x8E, 0x90, 0x00]))
             elif len(apdu) >= 7 and apdu[5:7] == [0xE1, 0x04]:
+                # print("[NFC-EMU] 📝 Seleccionando Archivo NDEF...")
                 selected_file = "NDEF"
                 pn532_send_command(bytes([0xD4, 0x8E, 0x90, 0x00]))
             else:
+                # print(f"[NFC-EMU] ❓ SELECT desconocido: {[hex(x) for x in apdu]}")
                 pn532_send_command(bytes([0xD4, 0x8E, 0x90, 0x00]))
             pn532_read_ack()
-            pn532_read_data(32, timeout_ms=80)
+            pn532_read_data(32, timeout_ms=80) # <--- LIMPIAR RESPUESTA DE TgSetData
 
         # ── READ BINARY ──
         elif ins == 0xB0:
             offset = (p1 << 8) | p2
             length = apdu[4] if len(apdu) > 4 else 15
+            # print(f"[NFC-EMU] 📖 READ BINARY: offset={offset}, length={length}, archivo_actual={selected_file}")
 
             if selected_file == "CC":
                 chunk = cc_file[offset : offset + length]
                 reply = bytes([0xD4, 0x8E]) + chunk + bytes([0x90, 0x00])
                 pn532_send_command(reply)
                 pn532_read_ack()
-                pn532_read_data(32, timeout_ms=80)
+                pn532_read_data(32, timeout_ms=80) # <--- LIMPIAR RESPUESTA DE TgSetData
             elif selected_file == "NDEF":
                 chunk = ndef_file[offset : offset + length]
                 reply = bytes([0xD4, 0x8E]) + chunk + bytes([0x90, 0x00])
                 pn532_send_command(reply)
                 pn532_read_ack()
-                pn532_read_data(32, timeout_ms=80)
+                pn532_read_data(32, timeout_ms=80) # <--- LIMPIAR RESPUESTA DE TgSetData
                 
                 # Solo terminamos si el celular ya leyó hasta el final del archivo NDEF
                 if offset + length >= len(ndef_file):
-                    print(f"[NFC] 📱 Celular conectado! Enlace enviado con Token: {token} (30s)")
+                    if ENABLE_NFC_LOGS:
+                        print(f"[NFC-EMU] 📱 ¡Celular conectado! Enlace enviado con Token: {token} (30s)")
                     pn532_abort_command()
                     pn532_wakeup()
                     return token
             else:
+                # print(f"[NFC-EMU] ❌ Error: intentando leer archivo no seleccionado ({selected_file})")
                 pn532_send_command(bytes([0xD4, 0x8E, 0x6A, 0x82]))
                 pn532_read_ack()
-                pn532_read_data(32, timeout_ms=80)
+                pn532_read_data(32, timeout_ms=80) # <--- LIMPIAR RESPUESTA DE TgSetData
 
     pn532_abort_command()
     return None
@@ -342,7 +373,7 @@ def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> str | None:
 
 def pn532_read_uid() -> str | None:
     """Busca tarjetas NFC Type A físicas y retorna su UID si no hay celular emulando."""
-    if not ENABLE_NFC or I2C_BUS is None:
+    if not ENABLE_NFC or NFC_UART is None:
         return None
     
     # 1. Primero intentar emular NDEF con el teléfono
@@ -351,10 +382,13 @@ def pn532_read_uid() -> str | None:
         return f"TOKEN:{token}"
     
     # 2. Si no hay teléfono conectado, hacer lectura pasiva de tarjetas/llaveros
+    # print("[NFC-READER] 🟢 Buscando tarjetas/llaveros físicos rápidos...") # (comentado para no saturar tanto la consola)
     if not pn532_send_command(bytes([0xD4, 0x4A, 0x01, 0x00])):
         return None
     
-    pn532_read_ack()
+    if not pn532_read_ack():
+        return None
+        
     resp = pn532_read_data(32, timeout_ms=30)
     if not resp:
         return None
@@ -364,7 +398,10 @@ def pn532_read_uid() -> str | None:
         if resp[idx + 1] == 0x4B and resp[idx + 2] > 0:
             uid_len = resp[idx + 7]
             uid_bytes = resp[idx + 8 : idx + 8 + uid_len]
-            return "".join(f"{b:02X}" for b in uid_bytes)
+            uid_hex = "".join(f"{b:02X}" for b in uid_bytes)
+            if ENABLE_NFC_LOGS:
+                print(f"[NFC] 🏷️  Tarjeta/Llavero físico detectado: UID={uid_hex} ({uid_len} bytes)")
+            return uid_hex
     except (ValueError, IndexError):
         pass
     
@@ -416,14 +453,16 @@ def main():
                     d = medir_distancia()
                     if d > 0:
                         uart.write(f"DIST:{d}\n".encode())
-                        if TEST_COMM_UART_ENABLED:
-                            print(f"[TEST-UART] -> Enviada medida urgente: {d} cm")
+                        print(f"[ORDEN MAESTRO] 📩 'MEDIR' recibido -> [HC-SR04] Disparo: {d} cm")
+                    else:
+                        uart.write(b"DIST:-1.0\n")
+                        print("[ORDEN MAESTRO] 📩 'MEDIR' recibido -> [HC-SR04] ⚠️ Sin lectura (-1.0 cm)")
                 elif "SCAN" in cmd:
                     uid = pn532_read_uid()
                     if uid:
                         uart.write(f"NFC:{uid}\n".encode())
-                        if TEST_COMM_UART_ENABLED:
-                            print(f"[TEST-UART] -> Enviado NFC: {uid}")
+                        if ENABLE_NFC_LOGS:
+                            print(f"[TEST-UART] 📤 Orden SCAN -> Enviado NFC al ESP32: {uid}")
 
         # 2. Lectura y reporte de temperatura periódico (si está habilitado)
         if ENABLE_TEMP_READING:
@@ -435,12 +474,12 @@ def main():
                     if TEST_COMM_UART_ENABLED:
                         print(f"[TEST-UART] Temperatura enviada: {t}°C")
 
-        # 3. Lectura periódica de distancia
-        if utime.ticks_diff(now, last_dist) >= DIST_INTERVAL_MS:
-            last_dist = now
-            d = medir_distancia()
-            if d > 0:
-                uart.write(f"DIST:{d}\n".encode())
+        # 3. Lectura periódica de distancia DESACTIVADA (solo mide cuando el Maestro envía MEDIR)
+        # if utime.ticks_diff(now, last_dist) >= DIST_INTERVAL_MS:
+        #     last_dist = now
+        #     d = medir_distancia()
+        #     if d > 0:
+        #         uart.write(f"DIST:{d}\n".encode())
 
         # 4. Polling continuo de tarjetas NFC
         if ENABLE_NFC and utime.ticks_diff(now, last_nfc) >= NFC_POLL_MS:
@@ -449,7 +488,8 @@ def main():
             if uid and uid != last_uid:
                 last_uid = uid
                 uart.write(f"NFC:{uid}\n".encode())
-                print(f"[NFC] UID Detectado: {uid}")
+                if ENABLE_NFC_LOGS:
+                    print(f"[NFC] 🚀 UID enviado al ESP32 Maestro: NFC:{uid}")
             elif not uid:
                 last_uid = None
 

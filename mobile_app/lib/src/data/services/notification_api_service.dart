@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../../core/config/app_config.dart';
 import '../../core/network/http_api_client.dart';
@@ -11,10 +10,10 @@ class NotificationApiService {
     : _http = http ?? HttpApiClient();
 
   Future<List<Map<String, dynamic>>> getNotifications(String userEmail) async {
-    final response = await _http.getJson(
+    final response = await _http.getJsonList(
       Uri.parse('${AppConfig.notificationUrl}/api/v1/notifications/$userEmail'),
     );
-    return List<Map<String, dynamic>>.from(response as List? ?? []);
+    return List<Map<String, dynamic>>.from(response);
   }
 
   Future<void> markAsRead(String notificationId) async {

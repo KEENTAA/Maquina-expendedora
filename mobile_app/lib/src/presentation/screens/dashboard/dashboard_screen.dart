@@ -1,10 +1,10 @@
 import 'map_picker_screen.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:image_picker/image_picker.dart';
@@ -16,17 +16,16 @@ import 'package:nfc_manager/nfc_manager_ios.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/config/app_config.dart';
-import '../../../data/services/vending_api_service.dart';
 import '../../controllers/auth_controller.dart';
 import '../../controllers/profile_controller.dart';
 import '../../controllers/purchase_controller.dart';
 import '../../controllers/wallet_controller.dart';
 import '../../controllers/admin_dashboard_controller.dart';
+import '../../widgets/animated_grog_frog.dart';
 import '../auth/login_screen.dart';
 import '../purchase/payment_confirmation_screen.dart';
 import '../purchase/qr_scanner_screen.dart';
 import '../purchase/nfc_vending_screen.dart';
-import '../profile/profile_screen.dart';
 import '../wallet/history_screen.dart';
 import '../wallet/transfer_screen.dart';
 import '../../../domain/entities/auth_session.dart';
@@ -35,7 +34,6 @@ import '../notifications/notification_screens.dart';
 import 'admin_panel_tab.dart';
 import 'audit_logs_tab.dart';
 import 'devops_panel_tab.dart';
-import '../settings/settings_screen.dart';
 
 // Cache to prevent jank when scrolling tabs
 final Map<String, Uint8List> _base64Cache = {};
@@ -44,10 +42,19 @@ Uint8List _getDecodedBytes(String base64Str) {
   if (_base64Cache.containsKey(base64Str)) {
     return _base64Cache[base64Str]!;
   }
-  final bytes = base64Decode(base64Str);
-  if (_base64Cache.length > 50) _base64Cache.clear(); // simple eviction
-  _base64Cache[base64Str] = bytes;
-  return bytes;
+  try {
+    String cleanStr = base64Str.trim();
+    if (cleanStr.contains(',')) {
+      cleanStr = cleanStr.split(',').last.trim();
+    }
+    cleanStr = cleanStr.replaceAll(RegExp(r'\s+'), '');
+    final bytes = base64Decode(cleanStr);
+    if (_base64Cache.length > 50) _base64Cache.clear(); // simple eviction
+    _base64Cache[base64Str] = bytes;
+    return bytes;
+  } catch (_) {
+    return Uint8List(0);
+  }
 }
 
 
@@ -60,8 +67,6 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   StreamSubscription<Uri>? _linkSubscription;
-
-  final VendingApiService _vendingApi = VendingApiService();
   bool _nfcListening = false;
 
   @override
@@ -216,10 +221,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final auth = context.read<AuthController>();
     final profile = context.read<ProfileController>();
     final wallet = context.read<WalletController>();
+    final admin = context.read<AdminDashboardController>();
     final session = auth.session;
     if (session == null) return;
-
-    await profile.load(session.email);
 
     if (linkWallet && linkedEmail != null) {
       await auth.linkSimupay(linkedEmail);
@@ -228,16 +232,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     final targetEmail = session.simupayEmail ?? session.email;
-    await wallet.load(targetEmail);
-    
-    if (context.mounted) {
-      context.read<NotificationController>().loadNotifications(session.email);
-    }
-    
-    // Cargar banner (a través del admin controller) para todos
-    if (context.mounted) {
-      context.read<AdminDashboardController>().loadStats();
-    }
+    final role = session.role.toUpperCase();
+
+    // Cargar en paralelo perfil, billetera, notificaciones y banner/stats
+    await Future.wait([
+      profile.load(session.email),
+      wallet.load(targetEmail),
+      if (context.mounted)
+        context.read<NotificationController>().loadNotifications(session.email),
+      if (role == 'ADMIN' || role == 'DEVOPS')
+        admin.loadStats()
+      else
+        admin.loadBannerOnly(),
+    ]);
   }
 
   @override
@@ -269,13 +276,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
         appBar: AppBar(
           backgroundColor: Colors.transparent,
           elevation: 0,
-          title: const Text(
-            'Grog Wallet',
-            style: TextStyle(
-              color: Colors.black87,
-              fontWeight: FontWeight.w800,
-              fontSize: 22,
-            ),
+          title: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AnimatedGrogFrog(size: 32),
+              SizedBox(width: 8),
+              Text(
+                'GROG',
+                style: TextStyle(
+                  color: Colors.black87,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 22,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ],
           ),
           actions: [
             Consumer<NotificationController>(
@@ -392,156 +407,357 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                ListTile(
-                  leading: const CircleAvatar(
-                    backgroundColor: Color(0xFF4F46E5),
-                    child: Icon(Icons.settings_remote, color: Colors.white),
-                  ),
-                  title: Text(machine['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: Text('ID: $machineId | Status: ${machine['status']}'),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      IconButton(
-                        icon: const Icon(Icons.bar_chart, color: Colors.orange),
-                        onPressed: () => _showTopSellersDialog(context, controller, machineId),
+                      const CircleAvatar(
+                        radius: 22,
+                        backgroundColor: Color(0xFF4F46E5),
+                        child: Icon(Icons.settings_remote, color: Colors.white, size: 22),
                       ),
-                      Builder(builder: (context) {
-                        bool isLightOn = controller.machineLights[machineId] ?? false;
-                        return IconButton(
-                          icon: Icon(
-                            isLightOn ? Icons.lightbulb : Icons.lightbulb_outline,
-                            color: isLightOn ? Colors.yellow : Colors.grey,
-                            shadows: isLightOn ? [const BoxShadow(color: Colors.yellow, blurRadius: 10)] : null,
-                          ),
-                          onPressed: () => controller.toggleLights(machineId),
-                        );
-                      }),
-                      IconButton(
-                        icon: const Icon(Icons.location_on, color: Colors.blue),
-                        onPressed: () async {
-                          final double lat = machine['lat'] != null ? double.tryParse(machine['lat'].toString()) ?? 0 : 0;
-                          final double lng = machine['lng'] != null ? double.tryParse(machine['lng'].toString()) ?? 0 : 0;
-                          
-                          final result = await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => MapPickerScreen(initialLat: lat, initialLng: lng),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              machine['name'],
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                             ),
-                          );
-                          
-                          if (result != null) {
-                            await controller.updateMachineLocation(machineId, result.latitude, result.longitude);
-                            if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ubicación guardada con éxito')));
-                            }
-                          }
-                        },
+                            const SizedBox(height: 2),
+                            Text(
+                              'ID: $machineId | Status: ${machine['status']}',
+                              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                            ),
+                          ],
+                        ),
+                      ),
+                      // Status Badge
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: (machine['status'] == 'online' ? Colors.green : Colors.grey).withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: (machine['status'] == 'online' ? Colors.green : Colors.grey).withValues(alpha: 0.3),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: machine['status'] == 'online' ? Colors.green : Colors.grey,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              machine['status']?.toString().toUpperCase() ?? 'OFFLINE',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: machine['status'] == 'online' ? Colors.green.shade800 : Colors.grey.shade700,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
                 ),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16),
-                  child: Text('Distribución 4x4:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                ),
-                const SizedBox(height: 12),
+
+                // BARRA HORIZONTAL DE ACCIONES (SOLO ICONOS LIMPIOS)
                 Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: GridView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 4,
-                      childAspectRatio: 0.8,
-                      crossAxisSpacing: 12,
-                      mainAxisSpacing: 12,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.grey.shade200),
                     ),
-                    itemCount: inventory.length,
-                    itemBuilder: (context, i) {
-                      final item = inventory[i];
-                      final isEnabled = item['is_enabled'] ?? true;
-                      final type = item['slot_type'] ?? 'soda';
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        // 1. Foco
+                        Builder(builder: (context) {
+                          bool isLightOn = controller.machineLights[machineId] ?? false;
+                          return IconButton(
+                            tooltip: isLightOn ? 'Apagar foco' : 'Encender foco',
+                            icon: Icon(
+                              isLightOn ? Icons.lightbulb : Icons.lightbulb_outline,
+                              color: isLightOn ? Colors.amber : Colors.grey[700],
+                              size: 22,
+                              shadows: isLightOn ? [const BoxShadow(color: Colors.amber, blurRadius: 10)] : null,
+                            ),
+                            onPressed: () => controller.toggleLights(machineId),
+                          );
+                        }),
+                        Container(width: 1, height: 20, color: Colors.grey.shade300),
+                        // 2. Stats
+                        IconButton(
+                          tooltip: 'Estadísticas de ventas',
+                          icon: const Icon(Icons.bar_chart, color: Colors.orange, size: 22),
+                          onPressed: () => _showTopSellersDialog(context, controller, machineId),
+                        ),
+                        Container(width: 1, height: 20, color: Colors.grey.shade300),
+                        // 3. Ubicación
+                        IconButton(
+                          tooltip: 'Ubicación en mapa',
+                          icon: const Icon(Icons.location_on, color: Colors.blue, size: 22),
+                          onPressed: () async {
+                            final double lat = machine['lat'] != null ? double.tryParse(machine['lat'].toString()) ?? 0 : 0;
+                            final double lng = machine['lng'] != null ? double.tryParse(machine['lng'].toString()) ?? 0 : 0;
+                            
+                            final result = await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => MapPickerScreen(initialLat: lat, initialLng: lng),
+                              ),
+                            );
+                            
+                            if (result != null) {
+                              await controller.updateMachineLocation(machineId, result.latitude, result.longitude);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ubicación guardada con éxito')));
+                              }
+                            }
+                          },
+                        ),
+                        Container(width: 1, height: 20, color: Colors.grey.shade300),
+                        // 4. Tuerca / Config
+                        IconButton(
+                          tooltip: 'Configuración técnica',
+                          icon: const Icon(Icons.settings, color: Color(0xFF4F46E5), size: 22),
+                          onPressed: () => _showMachineSettingsDialog(context, controller, machineId),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
 
-                      int stock = item['stock'] ?? 0;
-                      bool realEnabled = isEnabled && stock > 0;
-                      
-                      Widget imageWidget;
-                      if (item['image_base64'] != null && item['image_base64'].toString().isNotEmpty) {
-                        imageWidget = ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: Image.memory(
-                            _getDecodedBytes(item['image_base64']),
-                            fit: BoxFit.contain,
-                            gaplessPlayback: true,
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Productos',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                      ),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF4F46E5),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          visualDensity: VisualDensity.compact,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                        icon: const Icon(Icons.add, size: 16),
+                        label: const Text(
+                          'Añadir Slot',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                        ),
+                        onPressed: () => _showAddSlotDialog(context, controller, machineId),
+                      ),
+                    ],
+                  ),
+                ),
+
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  child: inventory.isEmpty
+                      ? const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(24.0),
+                            child: Text('No hay slots configurados.'),
                           ),
-                        );
-                      } else {
-                        imageWidget = Icon(
-                          type == 'soda' ? Icons.local_drink : Icons.fastfood,
-                          color: realEnabled ? const Color(0xFF4F46E5) : Colors.grey,
-                          size: 32,
-                        );
-                      }
-                      
-                      if (!realEnabled) {
-                         imageWidget = ColorFiltered(
-                           colorFilter: const ColorFilter.matrix([
-                             0.2126, 0.7152, 0.0722, 0, 0,
-                             0.2126, 0.7152, 0.0722, 0, 0,
-                             0.2126, 0.7152, 0.0722, 0, 0,
-                             0,      0,      0,      1, 0,
-                           ]),
-                           child: imageWidget,
-                         );
-                      }
+                        )
+                      : GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 4,
+                            childAspectRatio: 0.78,
+                            crossAxisSpacing: 10,
+                            mainAxisSpacing: 10,
+                          ),
+                          itemCount: inventory.length,
+                          itemBuilder: (context, i) {
+                            final item = inventory[i];
+                            final isEnabled = item['is_enabled'] ?? true;
+                            final type = item['slot_type'] ?? 'soda';
 
-                      return InkWell(
-                        onTap: () => _showEditSlotDialog(context, controller, machineId, item),
-                        child: Column(
-                          children: [
-                            Expanded(
-                              child: Container(
-                                width: double.infinity,
-                                decoration: BoxDecoration(
-                                  color: realEnabled ? Colors.white : Colors.grey[200],
-                                  borderRadius: BorderRadius.circular(16),
-                                  boxShadow: [
-                                    BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))
-                                  ],
-                                  border: Border.all(
-                                    color: realEnabled ? const Color(0xFF4F46E5).withOpacity(0.3) : Colors.red.withOpacity(0.3),
-                                    width: 2,
-                                  ),
+                            int stock = item['stock'] ?? 0;
+                            bool realEnabled = isEnabled && stock > 0;
+                            
+                            Widget imageWidget;
+                            if (item['image_base64'] != null && item['image_base64'].toString().isNotEmpty) {
+                              imageWidget = ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.memory(
+                                  _getDecodedBytes(item['image_base64']),
+                                  fit: BoxFit.contain,
+                                  gaplessPlayback: true,
                                 ),
-                                child: Padding(
-                                  padding: const EdgeInsets.all(4.0),
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Expanded(child: imageWidget),
-                                      const SizedBox(height: 2),
-                                      FittedBox(
-                                        fit: BoxFit.scaleDown,
-                                        child: Text('Bs. ${item['price']}', style: const TextStyle(fontSize: 12, color: Colors.green, fontWeight: FontWeight.bold)),
-                                      ),
-                                      if (!realEnabled)
-                                        const FittedBox(
-                                          fit: BoxFit.scaleDown,
-                                          child: Text('AGOTADO', style: TextStyle(color: Colors.red, fontSize: 9, fontWeight: FontWeight.bold)),
-                                        ),
-                                    ],
-                                  ),
+                              );
+                            } else {
+                              imageWidget = Icon(
+                                type == 'soda' ? Icons.local_drink : Icons.fastfood,
+                                color: realEnabled ? const Color(0xFF4F46E5) : Colors.grey,
+                                size: 30,
+                              );
+                            }
+                            
+                            if (!realEnabled) {
+                              imageWidget = ColorFiltered(
+                                colorFilter: const ColorFilter.matrix([
+                                  0.2126, 0.7152, 0.0722, 0, 0,
+                                  0.2126, 0.7152, 0.0722, 0, 0,
+                                  0.2126, 0.7152, 0.0722, 0, 0,
+                                  0,      0,      0,      1, 0,
+                                ]),
+                                child: imageWidget,
+                              );
+                            }
+
+                            final slotCard = Container(
+                              width: double.infinity,
+                              decoration: BoxDecoration(
+                                color: realEnabled ? Colors.white : Colors.grey[200],
+                                borderRadius: BorderRadius.circular(14),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(alpha: 0.04),
+                                    blurRadius: 6,
+                                    offset: const Offset(0, 2),
+                                  )
+                                ],
+                                border: Border.all(
+                                  color: realEnabled
+                                      ? const Color(0xFF4F46E5).withValues(alpha: 0.3)
+                                      : Colors.red.withValues(alpha: 0.3),
+                                  width: 1.5,
                                 ),
                               ),
-                            ),
-                            const SizedBox(height: 4),
-                            FittedBox(fit: BoxFit.scaleDown, child: Text('${item['slot']} | Disp: $stock', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold))),
-                          ],
+                              child: Padding(
+                                padding: const EdgeInsets.all(4.0),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Expanded(child: imageWidget),
+                                    const SizedBox(height: 2),
+                                    FittedBox(
+                                      fit: BoxFit.scaleDown,
+                                      child: Text(
+                                        'Bs. ${item['price']}',
+                                        style: const TextStyle(fontSize: 11, color: Colors.green, fontWeight: FontWeight.bold),
+                                      ),
+                                    ),
+                                    if (!realEnabled)
+                                      const FittedBox(
+                                        fit: BoxFit.scaleDown,
+                                        child: Text('AGOTADO', style: TextStyle(color: Colors.red, fontSize: 8, fontWeight: FontWeight.bold)),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            );
+
+                            return DragTarget<int>(
+                              onWillAcceptWithDetails: (details) => details.data != i,
+                              onAcceptWithDetails: (details) async {
+                                final fromIndex = details.data;
+                                final toIndex = i;
+                                final list = List<dynamic>.from(inventory);
+                                final movedItem = list.removeAt(fromIndex);
+                                list.insert(toIndex, movedItem);
+                                final orderedSlots = list.map((e) => e['slot'].toString()).toList();
+                                await controller.reorderSlots(machineId, orderedSlots);
+                              },
+                              builder: (context, candidateData, rejectedData) {
+                                final isTarget = candidateData.isNotEmpty;
+                                return LongPressDraggable<int>(
+                                  data: i,
+                                  feedback: Material(
+                                    elevation: 6,
+                                    borderRadius: BorderRadius.circular(14),
+                                    child: Container(
+                                      width: 80,
+                                      height: 100,
+                                      decoration: BoxDecoration(
+                                        color: Colors.white,
+                                        borderRadius: BorderRadius.circular(14),
+                                        border: Border.all(color: const Color(0xFF4F46E5), width: 2),
+                                      ),
+                                      child: Center(
+                                        child: Text(
+                                          '${item['slot']}',
+                                          style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF4F46E5), fontSize: 18),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  childWhenDragging: Opacity(
+                                    opacity: 0.3,
+                                    child: InkWell(
+                                      onTap: () => _showEditSlotDialog(context, controller, machineId, item),
+                                      child: Column(
+                                        children: [
+                                          Expanded(child: slotCard),
+                                          const SizedBox(height: 2),
+                                          FittedBox(
+                                            fit: BoxFit.scaleDown,
+                                            child: Text('${item['slot']}: ${item['product_name'] ?? ''}', style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
+                                          ),
+                                          FittedBox(
+                                            fit: BoxFit.scaleDown,
+                                            child: Text('Disp: $stock', style: TextStyle(fontSize: 9, color: Colors.grey[700])),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  child: AnimatedContainer(
+                                    duration: const Duration(milliseconds: 200),
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(14),
+                                      border: isTarget ? Border.all(color: Colors.orange, width: 2.5) : null,
+                                    ),
+                                    child: InkWell(
+                                      onTap: () => _showEditSlotDialog(context, controller, machineId, item),
+                                      child: Column(
+                                        children: [
+                                          Expanded(child: slotCard),
+                                          const SizedBox(height: 2),
+                                          FittedBox(
+                                            fit: BoxFit.scaleDown,
+                                            child: Text(
+                                              '${item['slot']}: ${item['product_name'] ?? ''}',
+                                              style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold),
+                                            ),
+                                          ),
+                                          FittedBox(
+                                            fit: BoxFit.scaleDown,
+                                            child: Text(
+                                              'Disp: $stock',
+                                              style: TextStyle(fontSize: 9, color: Colors.grey[700]),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            );
+                          },
                         ),
-                      );
-                    },
-                  ),
                 ),
               ],
             ),
@@ -552,6 +768,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _showEditSlotDialog(BuildContext context, AdminDashboardController controller, String machineId, dynamic item) {
+    final slotCodeController = TextEditingController(text: item['slot'].toString());
+    final nameController = TextEditingController(text: (item['product_name'] ?? '').toString());
     final priceController = TextEditingController(text: item['price'].toString());
     final stockController = TextEditingController(text: (item['stock'] ?? 0).toString());
     bool isEnabled = item['is_enabled'] ?? true;
@@ -569,15 +787,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 TextField(
+                  controller: slotCodeController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(
+                    labelText: 'Identificador del Slot',
+                    hintText: 'Ej. A1, B2, E1',
+                    prefixIcon: Icon(Icons.grid_view),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: nameController,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre del Producto',
+                    hintText: 'Ej. Coca Cola 500ml',
+                    prefixIcon: Icon(Icons.shopping_bag_outlined),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
                   controller: priceController,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(labelText: 'Precio (Bs.)', border: OutlineInputBorder()),
+                  decoration: const InputDecoration(
+                    labelText: 'Precio (Bs.)',
+                    prefixIcon: Icon(Icons.attach_money),
+                    border: OutlineInputBorder(),
+                  ),
                 ),
                 const SizedBox(height: 16),
                 TextField(
                   controller: stockController,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Cantidad en Stock', border: OutlineInputBorder()),
+                  decoration: const InputDecoration(
+                    labelText: 'Cantidad en Stock',
+                    prefixIcon: Icon(Icons.inventory_2_outlined),
+                    border: OutlineInputBorder(),
+                  ),
                 ),
                 const SizedBox(height: 16),
                 SwitchListTile(
@@ -628,9 +876,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
               onPressed: () async {
                 final price = double.tryParse(priceController.text);
                 final stock = int.tryParse(stockController.text);
+                final name = nameController.text.trim();
+                final newSlot = slotCodeController.text.trim().toUpperCase();
+
                 if (price != null && stock != null) {
                   Navigator.pop(context);
-                  await controller.updateSlotDetails(machineId, item['slot'], item['inventory_id'], price, stock, isEnabled, slotType);
+                  await controller.updateSlotDetails(
+                    machineId,
+                    item['slot'],
+                    item['inventory_id'],
+                    price,
+                    stock,
+                    isEnabled,
+                    slotType,
+                    newProductName: name.isNotEmpty ? name : null,
+                    newSlot: newSlot.isNotEmpty ? newSlot : null,
+                  );
+                  if (context.mounted) {
+                    if (controller.error != null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error al guardar: ${controller.error}'), backgroundColor: Colors.red),
+                      );
+                    } else {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Slot $newSlot actualizado con éxito'),
+                          backgroundColor: const Color(0xFF4F46E5),
+                        ),
+                      );
+                    }
+                  }
                 }
               },
               child: const Text('Guardar'),
@@ -638,6 +913,396 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  void _showAddSlotDialog(BuildContext context, AdminDashboardController controller, String machineId) {
+    final slotCodeController = TextEditingController();
+    final nameController = TextEditingController();
+    final priceController = TextEditingController(text: '8.0');
+    final stockController = TextEditingController(text: '10');
+    String slotType = 'soda';
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('Añadir Nuevo Slot'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: slotCodeController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(
+                    labelText: 'Identificador del Slot',
+                    hintText: 'Ej. E1, D2, F3',
+                    prefixIcon: Icon(Icons.grid_view),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: nameController,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre del Producto',
+                    hintText: 'Ej. Fanta 500ml',
+                    prefixIcon: Icon(Icons.shopping_bag_outlined),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: priceController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Precio (Bs.)',
+                    prefixIcon: Icon(Icons.attach_money),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: stockController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Cantidad Inicial en Stock',
+                    prefixIcon: Icon(Icons.inventory_2_outlined),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text('Tipo de Producto:'),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    ChoiceChip(
+                      label: const Text('Soda'),
+                      selected: slotType == 'soda',
+                      onSelected: (v) => setModalState(() => slotType = 'soda'),
+                    ),
+                    const SizedBox(width: 8),
+                    ChoiceChip(
+                      label: const Text('Snack'),
+                      selected: slotType == 'snack',
+                      onSelected: (v) => setModalState(() => slotType = 'snack'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+            ElevatedButton(
+              onPressed: () async {
+                final slotCode = slotCodeController.text.trim().toUpperCase();
+                final name = nameController.text.trim();
+                final price = double.tryParse(priceController.text);
+                final stock = int.tryParse(stockController.text);
+
+                if (slotCode.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Debes especificar un código de slot (ej. E1)')),
+                  );
+                  return;
+                }
+                if (price != null && stock != null) {
+                  Navigator.pop(context);
+                  await controller.createSlot(
+                    machineId,
+                    slot: slotCode,
+                    productName: name.isNotEmpty ? name : 'Producto $slotCode',
+                    price: price,
+                    stock: stock,
+                    slotType: slotType,
+                  );
+                  if (context.mounted) {
+                    if (controller.error != null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error al crear: ${controller.error}'), backgroundColor: Colors.red),
+                      );
+                    } else {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Slot $slotCode creado con éxito'),
+                          backgroundColor: const Color(0xFF4F46E5),
+                        ),
+                      );
+                    }
+                  }
+                }
+              },
+              child: const Text('Crear Slot'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+
+  void _showMachineSettingsDialog(BuildContext context, AdminDashboardController controller, String machineId) {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return FutureBuilder<Map<String, dynamic>?>(
+          future: controller.getMachineConfig(machineId),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const AlertDialog(
+                content: SizedBox(
+                  height: 100,
+                  child: Center(child: CircularProgressIndicator()),
+                ),
+              );
+            }
+
+            final config = snapshot.data ?? {};
+            int currentTtl = (config['code_ttl'] as num?)?.toInt() ?? 45;
+            final ttlController = TextEditingController(text: currentTtl.toString());
+            final ssidController = TextEditingController(text: config['wifi_ssid'] ?? '');
+            final passController = TextEditingController(text: config['wifi_password'] ?? '');
+            final serverController = TextEditingController(text: config['server_ip'] ?? '');
+            bool isSaving = false;
+
+            return StatefulBuilder(
+              builder: (context, setStateModal) {
+                return AlertDialog(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                  title: Row(
+                    children: [
+                      const Icon(Icons.settings, color: Color(0xFF4F46E5)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Ajustes: $machineId',
+                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ),
+                  content: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Rotación de Código PIN (TTL)',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                        const SizedBox(height: 6),
+                        TextField(
+                          controller: ttlController,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Segundos de expiración (TTL)',
+                            border: OutlineInputBorder(),
+                            suffixText: 'seg',
+                            prefixIcon: Icon(Icons.timelapse),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          children: [30, 45, 60, 90, 120].map((s) {
+                            return ActionChip(
+                              label: Text('$s s'),
+                              onPressed: () {
+                                setStateModal(() {
+                                  ttlController.text = s.toString();
+                                });
+                              },
+                            );
+                          }).toList(),
+                        ),
+                        const Divider(height: 24),
+                        // TOKEN Y CÓDIGO ACTUAL DE LA MÁQUINA
+                        Builder(
+                          builder: (context) {
+                            final sessionData = controller.machineSessionCodes[machineId];
+                            final currentPin = sessionData != null && sessionData['code'] != null
+                                ? sessionData['code'].toString()
+                                : '----';
+                            final machineToken = config['token'] ?? config['machine_token'] ?? machineId;
+                            final expiresAt = sessionData != null && sessionData['expires_at'] != null
+                                ? sessionData['expires_at'].toString().split('T').last.split('.').first
+                                : null;
+
+                            return Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF4F46E5).withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: const Color(0xFF4F46E5).withValues(alpha: 0.2)),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.vpn_key_rounded, size: 16, color: Color(0xFF4F46E5)),
+                                      const SizedBox(width: 6),
+                                      const Text(
+                                        'PIN Activo / Token de Máquina',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12,
+                                          color: Color(0xFF4F46E5),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          const Text(
+                                            'PIN en Pantalla:',
+                                            style: TextStyle(fontSize: 11, color: Colors.grey),
+                                          ),
+                                          Text(
+                                            currentPin,
+                                            style: const TextStyle(
+                                              fontSize: 20,
+                                              fontWeight: FontWeight.w900,
+                                              letterSpacing: 2,
+                                              color: Color(0xFF1E1B4B),
+                                            ),
+                                          ),
+                                          if (expiresAt != null)
+                                            Text(
+                                              'Expira a las: $expiresAt',
+                                              style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                            ),
+                                        ],
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Copiar Token',
+                                        icon: const Icon(Icons.copy_rounded, size: 18, color: Color(0xFF4F46E5)),
+                                        onPressed: () {
+                                          Clipboard.setData(ClipboardData(text: machineToken.toString()));
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(
+                                              content: Text('Token de máquina copiado al portapapeles'),
+                                              duration: Duration(seconds: 2),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Token ID: $machineToken',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontFamily: 'monospace',
+                                      color: Colors.grey.shade700,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                        const Divider(height: 24),
+                        const Text(
+                          'Red y Conectividad',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: ssidController,
+                          decoration: const InputDecoration(
+                            labelText: 'WiFi SSID',
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.wifi),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: passController,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            labelText: 'WiFi Contraseña',
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.lock_outline),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: serverController,
+                          decoration: const InputDecoration(
+                            labelText: 'IP Servidor / Host',
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.dns),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: isSaving ? null : () => Navigator.pop(context),
+                      child: const Text('Cancelar'),
+                    ),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF4F46E5),
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: isSaving
+                          ? null
+                          : () async {
+                              setStateModal(() => isSaving = true);
+                              final newTtl = int.tryParse(ttlController.text.trim());
+                              final newSsid = ssidController.text.trim();
+                              final newPass = passController.text.trim();
+                              final newServer = serverController.text.trim();
+
+                              final ok = await controller.updateMachineConfig(
+                                machineId,
+                                codeTtl: newTtl,
+                                wifiSsid: newSsid.isNotEmpty ? newSsid : null,
+                                wifiPassword: newPass.isNotEmpty ? newPass : null,
+                                serverIp: newServer.isNotEmpty ? newServer : null,
+                              );
+
+                              if (!mounted) return;
+                              Navigator.pop(context);
+                              ScaffoldMessenger.of(this.context).showSnackBar(
+                                SnackBar(
+                                  content: Text(ok
+                                      ? 'Configuración de máquina guardada exitosamente.'
+                                      : 'Error al actualizar configuración de máquina.'),
+                                  backgroundColor: ok ? Colors.green : Colors.redAccent,
+                                ),
+                              );
+                            },
+                      child: isSaving
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Text('Guardar'),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      },
     );
   }
 
@@ -670,136 +1335,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildAdminBannerTab(BuildContext context) {
-    final controller = context.watch<AdminDashboardController>();
-    final bannerTitle = controller.banner['title'] ?? '';
-    final bannerConcept = controller.banner['concept'] ?? '';
-    final bannerImage = controller.banner['image_base64'] ?? '';
-
-    return ListView(
-      padding: const EdgeInsets.all(24),
-      children: [
-        const Text('Anuncio Fijo (Cartel)', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-        const Text('Aparece en la cima de las notificaciones siempre.', style: TextStyle(color: Colors.grey)),
-        const SizedBox(height: 24),
-        
-        TextFormField(
-          initialValue: bannerTitle,
-          decoration: const InputDecoration(labelText: 'Título del Anuncio', border: OutlineInputBorder()),
-          onChanged: (value) => controller.banner['title'] = value,
-        ),
-        const SizedBox(height: 16),
-        
-        TextFormField(
-          initialValue: bannerConcept,
-          maxLines: 3,
-          decoration: const InputDecoration(labelText: 'Concepto / Descripción', border: OutlineInputBorder()),
-          onChanged: (value) => controller.banner['concept'] = value,
-        ),
-        const SizedBox(height: 24),
-
-        if (bannerImage.isNotEmpty)
-          ClipRRect(
-            borderRadius: BorderRadius.circular(20),
-            child: Image.memory(
-              _getDecodedBytes(bannerImage),
-              height: 150, width: double.infinity, fit: BoxFit.cover,
-              gaplessPlayback: true,
-            )
-          )
-        else
-          Container(
-            height: 120,
-            decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(20)),
-            child: const Center(child: Text('No hay imagen seleccionada')),
-          ),
-        
-        const SizedBox(height: 16),
-        ElevatedButton.icon(
-          onPressed: () async {
-            final picker = ImagePicker();
-            final XFile? image = await picker.pickImage(source: ImageSource.gallery, maxWidth: 800);
-            if (image != null) {
-              final bytes = await image.readAsBytes();
-              final base64Image = base64Encode(bytes);
-              controller.banner['image_base64'] = base64Image;
-              // Forzamos rebuild manual cambiando el state
-              // (aunque el onChanged ya lo hace en los TextFields, aquí necesitamos update visual rápido)
-              // context.read<AdminDashboardController>().notifyListeners(); no accesible directamente, pero updateBanner lo hará
-            }
-          },
-          icon: const Icon(Icons.image),
-          label: const Text('Elegir Nueva Foto'),
-          style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-        ),
-        
-        const SizedBox(height: 24),
-        ElevatedButton.icon(
-          onPressed: () => controller.updateBanner(
-            controller.banner['title'] ?? '',
-            controller.banner['concept'] ?? '',
-            controller.banner['image_base64'] ?? ''
-          ),
-          icon: const Icon(Icons.save),
-          label: const Text('Guardar y Publicar Anuncio'),
-          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4F46E5), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16)),
-        ),
-        
-        const SizedBox(height: 32),
-        const Divider(),
-        const SizedBox(height: 16),
-        
-        const Text('Lanzar Oferta / Alerta (Push en vivo)', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.orange)),
-        const Text('Envía una notificación inmediata a todos los teléfonos.', style: TextStyle(color: Colors.grey)),
-        const SizedBox(height: 16),
-        
-        Builder(
-          builder: (ctx) {
-            String bTitle = '';
-            String bSummary = '';
-            String bDesc = '';
-            return Column(
-              children: [
-                TextFormField(
-                  decoration: const InputDecoration(labelText: 'Título de la Oferta', border: OutlineInputBorder()),
-                  onChanged: (v) => bTitle = v,
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  decoration: const InputDecoration(labelText: 'Resumen corto', border: OutlineInputBorder()),
-                  onChanged: (v) => bSummary = v,
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  maxLines: 3,
-                  decoration: const InputDecoration(labelText: 'Descripción completa', border: OutlineInputBorder()),
-                  onChanged: (v) => bDesc = v,
-                ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: () async {
-                      if (bTitle.isEmpty || bDesc.isEmpty) return;
-                      await controller.sendBroadcast(bTitle, bSummary, bDesc, 'success');
-                      if (ctx.mounted) {
-                        if (controller.error != null) {
-                           ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Error: ${controller.error}'), backgroundColor: Colors.red));
-                        } else {
-                           ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Notificación enviada a todos')));
-                        }
-                      }
-                    },
-                    icon: const Icon(Icons.send),
-                    label: const Text('Enviar a Todos Ahora'),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16)),
-                  ),
-                ),
-              ],
-            );
-          }
-        ),
-      ],
-    );
+    return const _AdminMarketingTab();
   }
 
   Widget _buildMainDashboard(
@@ -1332,7 +1868,17 @@ class _DashboardAvatar extends StatelessWidget {
         child: const Icon(Icons.person, color: Colors.white, size: 24),
       );
     }
-    final bytes = base64Decode(base64Image!);
+    final bytes = _getDecodedBytes(base64Image!);
+    if (bytes.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.2),
+          shape: BoxShape.circle,
+        ),
+        child: const Icon(Icons.person, color: Colors.white, size: 24),
+      );
+    }
     return Container(
       decoration: BoxDecoration(
         shape: BoxShape.circle,
@@ -1340,7 +1886,549 @@ class _DashboardAvatar extends StatelessWidget {
       ),
       child: CircleAvatar(
         radius: 20,
-        backgroundImage: MemoryImage(Uint8List.fromList(bytes)),
+        backgroundImage: MemoryImage(bytes),
+      ),
+    );
+  }
+}
+
+class _AdminMarketingTab extends StatefulWidget {
+  const _AdminMarketingTab();
+
+  @override
+  State<_AdminMarketingTab> createState() => _AdminMarketingTabState();
+}
+
+class _AdminMarketingTabState extends State<_AdminMarketingTab> {
+  late TextEditingController _bannerTitleCtrl;
+  late TextEditingController _bannerConceptCtrl;
+
+  final TextEditingController _pushTitleCtrl = TextEditingController();
+  final TextEditingController _pushSummaryCtrl = TextEditingController();
+  final TextEditingController _pushDescCtrl = TextEditingController();
+  String _selectedPushType = 'info';
+
+  bool _isSendingPush = false;
+  bool _isSavingBanner = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final admin = context.read<AdminDashboardController>();
+    _bannerTitleCtrl = TextEditingController(text: admin.banner['title'] ?? '');
+    _bannerConceptCtrl = TextEditingController(text: admin.banner['concept'] ?? '');
+  }
+
+  @override
+  void dispose() {
+    _bannerTitleCtrl.dispose();
+    _bannerConceptCtrl.dispose();
+    _pushTitleCtrl.dispose();
+    _pushSummaryCtrl.dispose();
+    _pushDescCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<AdminDashboardController>();
+    final bannerImage = controller.banner['image_base64'] ?? '';
+
+    // Si cambió el banner desde fuera y no estamos escribiendo
+    if (_bannerTitleCtrl.text != (controller.banner['title'] ?? '') && !_bannerTitleCtrl.selection.isValid) {
+      _bannerTitleCtrl.text = controller.banner['title'] ?? '';
+    }
+    if (_bannerConceptCtrl.text != (controller.banner['concept'] ?? '') && !_bannerConceptCtrl.selection.isValid) {
+      _bannerConceptCtrl.text = controller.banner['concept'] ?? '';
+    }
+
+    const primaryColor = Color(0xFF4F46E5);
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      children: [
+        // Encabezado
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: primaryColor.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.campaign_rounded, color: primaryColor, size: 26),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Difusión & Publicidad',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    'Gestiona carteles fijos y alertas a clientes',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 20),
+
+        // SECCIÓN 1: CARTEL FIJO / BANNER
+        Card(
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: Colors.grey.shade200),
+          ),
+          color: Colors.white,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.view_carousel_rounded, size: 20, color: primaryColor),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'Cartel Destacado',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: primaryColor.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        'En Notificaciones',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: primaryColor),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+
+                // Previsualización de Imagen
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: bannerImage.isNotEmpty
+                      ? Stack(
+                          children: [
+                            Image.memory(
+                              _getDecodedBytes(bannerImage),
+                              height: 150,
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                              gaplessPlayback: true,
+                            ),
+                            Positioned(
+                              top: 8,
+                              right: 8,
+                              child: Container(
+                                decoration: const BoxDecoration(
+                                  color: Colors.black54,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: IconButton(
+                                  icon: const Icon(Icons.close, color: Colors.white, size: 18),
+                                  onPressed: () => controller.setBannerImage(''),
+                                  tooltip: 'Quitar imagen',
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : Container(
+                          height: 120,
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade50,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey.shade200, style: BorderStyle.solid),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.add_photo_alternate_outlined, size: 38, color: Colors.grey.shade400),
+                              const SizedBox(height: 6),
+                              Text(
+                                'Sin imagen seleccionada',
+                                style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
+                              ),
+                            ],
+                          ),
+                        ),
+                ),
+                const SizedBox(height: 12),
+
+                // Botón Seleccionar Imagen
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final picker = ImagePicker();
+                      final XFile? image = await picker.pickImage(source: ImageSource.gallery, maxWidth: 900);
+                      if (image != null) {
+                        final bytes = await image.readAsBytes();
+                        final base64Image = base64Encode(bytes);
+                        controller.setBannerImage(base64Image);
+                      }
+                    },
+                    icon: const Icon(Icons.photo_library_outlined, size: 18),
+                    label: Text(bannerImage.isEmpty ? 'Elegir Imagen del Cartel' : 'Cambiar Imagen'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: primaryColor,
+                      side: const BorderSide(color: primaryColor),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+
+                // Campos
+                TextField(
+                  controller: _bannerTitleCtrl,
+                  decoration: InputDecoration(
+                    labelText: 'Título del Cartel',
+                    hintText: 'Ej. Gran Descuento de Fin de Semana',
+                    labelStyle: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+                    filled: true,
+                    fillColor: Colors.grey.shade50,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade200)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: primaryColor)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                TextField(
+                  controller: _bannerConceptCtrl,
+                  maxLines: 2,
+                  decoration: InputDecoration(
+                    labelText: 'Concepto / Detalle de la Campaña',
+                    hintText: 'Ej. 2x1 en todos los refrescos helados hasta las 20:00.',
+                    labelStyle: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+                    filled: true,
+                    fillColor: Colors.grey.shade50,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade200)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: primaryColor)),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Guardar Cartel
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _isSavingBanner
+                        ? null
+                        : () async {
+                            setState(() => _isSavingBanner = true);
+                            final success = await controller.updateBanner(
+                              _bannerTitleCtrl.text.trim(),
+                              _bannerConceptCtrl.text.trim(),
+                              controller.banner['image_base64'] ?? '',
+                            );
+                            setState(() => _isSavingBanner = false);
+
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Row(
+                                    children: [
+                                      Icon(
+                                        success ? Icons.check_circle : Icons.error_outline,
+                                        color: Colors.white,
+                                        size: 20,
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          success
+                                              ? 'Cartel publicado exitosamente'
+                                              : 'Error al publicar: ${controller.error ?? "error desconocido"}',
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  backgroundColor: success ? const Color(0xFF10B981) : Colors.redAccent,
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                ),
+                              );
+                            }
+                          },
+                    icon: _isSavingBanner
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                          )
+                        : const Icon(Icons.check_rounded, size: 20),
+                    label: Text(_isSavingBanner ? 'Guardando...' : 'Guardar y Publicar Cartel'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: primaryColor,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      elevation: 0,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 24),
+
+        // SECCIÓN 2: DIFUSIÓN PUSH MASIVA (EN VIVO)
+        Card(
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: Colors.grey.shade200),
+          ),
+          color: Colors.white,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.send_rounded, size: 20, color: primaryColor),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'Envío Masivo a Clientes',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        'Push en vivo',
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Color(0xFF10B981)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Transmite una notificación instantánea a todas las cuentas registradas en la aplicación.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+                const SizedBox(height: 16),
+
+                // Selector de Tipo de Notificación Minimalista
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildTypePill('info', 'Informativo', Icons.info_outline, primaryColor),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _buildTypePill('success', 'Oferta / Promo', Icons.local_offer_outlined, const Color(0xFF10B981)),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _buildTypePill('warning', 'Alerta / Aviso', Icons.warning_amber_rounded, const Color(0xFFF59E0B)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+
+                TextField(
+                  controller: _pushTitleCtrl,
+                  decoration: InputDecoration(
+                    labelText: 'Título de la Notificación',
+                    hintText: 'Ej. ¡Nuevos refrescos disponibles!',
+                    labelStyle: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+                    filled: true,
+                    fillColor: Colors.grey.shade50,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade200)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: primaryColor)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                TextField(
+                  controller: _pushSummaryCtrl,
+                  decoration: InputDecoration(
+                    labelText: 'Resumen Breve',
+                    hintText: 'Texto corto visible en la previsualización push',
+                    labelStyle: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+                    filled: true,
+                    fillColor: Colors.grey.shade50,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade200)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: primaryColor)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                TextField(
+                  controller: _pushDescCtrl,
+                  maxLines: 3,
+                  decoration: InputDecoration(
+                    labelText: 'Mensaje Completo',
+                    hintText: 'Descripción detallada que leerá el usuario al abrir la alerta.',
+                    labelStyle: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+                    filled: true,
+                    fillColor: Colors.grey.shade50,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade200)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: primaryColor)),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Botón Enviar a Todos
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _isSendingPush
+                        ? null
+                        : () async {
+                            final title = _pushTitleCtrl.text.trim();
+                            final summary = _pushSummaryCtrl.text.trim();
+                            final desc = _pushDescCtrl.text.trim();
+
+                            if (title.isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Por favor ingresa un título')),
+                              );
+                              return;
+                            }
+
+                            if (desc.isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Por favor ingresa el mensaje completo')),
+                              );
+                              return;
+                            }
+
+                            setState(() => _isSendingPush = true);
+                            final success = await controller.sendBroadcast(
+                              title,
+                              summary.isEmpty ? title : summary,
+                              desc,
+                              _selectedPushType,
+                            );
+                            setState(() => _isSendingPush = false);
+
+                            if (context.mounted) {
+                              if (success) {
+                                _pushTitleCtrl.clear();
+                                _pushSummaryCtrl.clear();
+                                _pushDescCtrl.clear();
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: const Row(
+                                      children: [
+                                        Icon(Icons.mark_email_read_rounded, color: Colors.white, size: 20),
+                                        SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text('Notificación transmitida a todos los usuarios'),
+                                        ),
+                                      ],
+                                    ),
+                                    backgroundColor: const Color(0xFF10B981),
+                                    behavior: SnackBarBehavior.floating,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                  ),
+                                );
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Error al enviar: ${controller.error ?? "error desconocido"}'),
+                                    backgroundColor: Colors.redAccent,
+                                    behavior: SnackBarBehavior.floating,
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                    icon: _isSendingPush
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                          )
+                        : const Icon(Icons.send_rounded, size: 18),
+                    label: Text(_isSendingPush ? 'Transmitiendo a todos...' : 'Enviar a Todos Ahora'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF10B981),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      elevation: 0,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 30),
+      ],
+    );
+  }
+
+  Widget _buildTypePill(String type, String label, IconData icon, Color color) {
+    final isSelected = _selectedPushType == type;
+    return InkWell(
+      onTap: () => setState(() => _selectedPushType = type),
+      borderRadius: BorderRadius.circular(8),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withValues(alpha: 0.12) : Colors.grey.shade50,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected ? color : Colors.grey.shade200,
+            width: isSelected ? 1.5 : 1,
+          ),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, size: 18, color: isSelected ? color : Colors.grey.shade600),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 10.5,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                color: isSelected ? color : Colors.grey.shade700,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }
