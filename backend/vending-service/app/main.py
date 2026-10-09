@@ -27,10 +27,18 @@ class Machine(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     owner_email: Mapped[str] = mapped_column(String, index=True)
     name: Mapped[str] = mapped_column(String)
-    latitude: Mapped[float] = mapped_column(Float)
-    longitude: Mapped[float] = mapped_column(Float)
+    latitude: Mapped[float] = mapped_column(Float, default=-17.8)
+    longitude: Mapped[float] = mapped_column(Float, default=-63.2)
     status: Mapped[str] = mapped_column(String, default="online")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    machine_type: Mapped[str] = mapped_column(String, default="SNACK_VENDING")  # SNACK_VENDING, COOLER_DRINKS, COFFEE_MACHINE
+    environment: Mapped[str] = mapped_column(String, default="SIMULATED")      # SIMULATED, PHYSICAL
+    protocol: Mapped[str] = mapped_column(String, default="MDB")                # MDB, PULSE, PROPRIETARY
+    brand_model: Mapped[str] = mapped_column(String, default="GROG Digital Twin")
+    is_claimed: Mapped[int] = mapped_column(Integer, default=1)                 # 1=True, 0=False
+    activation_token: Mapped[str | None] = mapped_column(String, nullable=True)
+    activation_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    activation_expires_at: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class Product(Base):
@@ -69,59 +77,142 @@ from sqlalchemy import inspect, text
 
 def _ensure_schema_compatibility() -> None:
     inspector = inspect(engine)
-    if "inventory" not in inspector.get_table_names():
-        return
-    cols = {col["name"] for col in inspector.get_columns("inventory")}
-    with engine.begin() as conn:
-        if "image_base64" not in cols:
-            conn.execute(text("ALTER TABLE inventory ADD COLUMN image_base64 TEXT"))
-        if "display_order" not in cols:
-            conn.execute(text("ALTER TABLE inventory ADD COLUMN display_order INTEGER DEFAULT 0"))
+    if "inventory" in inspector.get_table_names():
+        cols = {col["name"] for col in inspector.get_columns("inventory")}
+        with engine.begin() as conn:
+            if "image_base64" not in cols:
+                conn.execute(text("ALTER TABLE inventory ADD COLUMN image_base64 TEXT"))
+            if "display_order" not in cols:
+                conn.execute(text("ALTER TABLE inventory ADD COLUMN display_order INTEGER DEFAULT 0"))
+
+    if "machines" in inspector.get_table_names():
+        m_cols = {col["name"] for col in inspector.get_columns("machines")}
+        with engine.begin() as conn:
+            if "machine_type" not in m_cols:
+                conn.execute(text("ALTER TABLE machines ADD COLUMN machine_type VARCHAR DEFAULT 'SNACK_VENDING'"))
+            if "environment" not in m_cols:
+                conn.execute(text("ALTER TABLE machines ADD COLUMN environment VARCHAR DEFAULT 'SIMULATED'"))
+            if "protocol" not in m_cols:
+                conn.execute(text("ALTER TABLE machines ADD COLUMN protocol VARCHAR DEFAULT 'MDB'"))
+            if "brand_model" not in m_cols:
+                conn.execute(text("ALTER TABLE machines ADD COLUMN brand_model VARCHAR DEFAULT 'GROG Virtual Twin'"))
+            if "is_claimed" not in m_cols:
+                conn.execute(text("ALTER TABLE machines ADD COLUMN is_claimed INTEGER DEFAULT 1"))
+            if "activation_token" not in m_cols:
+                conn.execute(text("ALTER TABLE machines ADD COLUMN activation_token VARCHAR"))
+            if "activation_code" not in m_cols:
+                conn.execute(text("ALTER TABLE machines ADD COLUMN activation_code VARCHAR"))
+            if "activation_expires_at" not in m_cols:
+                conn.execute(text("ALTER TABLE machines ADD COLUMN activation_expires_at FLOAT"))
 
 _ensure_schema_compatibility()
 
+def _provision_machine_template(db, machine_id: str, machine_type: str = "SNACK_VENDING") -> None:
+    existing_slots = db.query(Inventory).filter(Inventory.machine_id == machine_id).count()
+    if existing_slots > 0:
+        return
+
+    templates = {
+        "SNACK_VENDING": [
+            ("A1", "PROD-SNK-1", "SNK-01", "Papas Sabores / Lays", 6.00, 8, 12, "snack"),
+            ("A2", "PROD-SNK-2", "SNK-02", "Galletas Oreo Doble", 5.50, 10, 12, "snack"),
+            ("A3", "PROD-SNK-3", "SNK-03", "Club Social Clásica", 4.00, 12, 15, "snack"),
+            ("B1", "PROD-SNK-4", "SNK-04", "Galletas Field Vainilla", 4.50, 9, 12, "snack"),
+            ("B2", "PROD-SNK-5", "SNK-05", "Chocman Chocolate", 4.00, 7, 10, "snack"),
+            ("B3", "PROD-SNK-6", "SNK-06", "Snickers Barra", 6.50, 9, 12, "snack"),
+            ("C1", "PROD-SNK-7", "SNK-07", "Ronditas Vainilla", 3.50, 11, 12, "snack"),
+            ("C2", "PROD-SNK-8", "SNK-08", "Gomitas Frutales", 4.50, 6, 10, "snack"),
+            ("C3", "PROD-SNK-9", "SNK-09", "Maní Salado Crocante", 3.00, 12, 15, "snack"),
+        ],
+        "COOLER_DRINKS": [
+            ("D1", "PROD-DRK-1", "PWR-01", "Powerade Mountain Blast (Azul)", 8.00, 8, 12, "soda"),
+            ("D2", "PROD-DRK-2", "PWR-02", "Powerade Ion4 Manzana (Verde)", 8.00, 7, 12, "soda"),
+            ("D3", "PROD-DRK-3", "COLA-03", "Coca-Cola Original 500ml", 8.00, 10, 12, "soda"),
+            ("D4", "PROD-DRK-4", "SPRITE-04", "Sprite Lima Limón Zero", 7.00, 9, 12, "soda"),
+            ("D5", "PROD-DRK-5", "FANTA-05", "Fanta Naranja 500ml", 7.00, 8, 12, "soda"),
+            ("D6", "PROD-DRK-6", "WATER-06", "Agua Mineral Vital 600ml", 5.00, 14, 15, "soda"),
+        ],
+        "COFFEE_MACHINE": [
+            ("E1", "PROD-COF-1", "HOT-01", "Café Avellanas", 6.00, 20, 25, "coffee"),
+            ("E2", "PROD-COF-2", "HOT-02", "Cappuccino Avellanas", 6.00, 18, 25, "coffee"),
+            ("E3", "PROD-COF-3", "HOT-03", "Chocolate Suizo", 6.00, 22, 25, "coffee"),
+            ("E4", "PROD-COF-4", "HOT-04", "Espresso Italiano", 5.00, 25, 25, "coffee"),
+            ("E5", "PROD-COF-5", "HOT-05", "Café Americano", 5.00, 24, 25, "coffee"),
+            ("E6", "PROD-COF-6", "HOT-06", "Café con Leche", 6.00, 19, 25, "coffee"),
+        ]
+    }
+
+    m_type = machine_type if machine_type in templates else "SNACK_VENDING"
+    items = templates[m_type]
+
+    for order, (slot_code, p_id, sku, p_name, p_price, stock, cap, stype) in enumerate(items, 1):
+        prod = db.query(Product).filter((Product.id == p_id) | (Product.sku == sku)).first()
+        if not prod:
+            prod = Product(id=p_id, sku=sku, name=p_name, price=p_price)
+            db.add(prod)
+            db.flush()
+        
+        inv = Inventory(
+            id=str(uuid4()),
+            machine_id=machine_id,
+            product_id=prod.id,
+            slot=slot_code,
+            stock=stock,
+            capacity=cap,
+            price=p_price,
+            is_enabled=True,
+            slot_type=stype,
+            display_order=order
+        )
+        db.add(inv)
+
 def _seed() -> None:
     with SessionLocal() as db:
-        if db.query(Machine).count() == 0:
-            db.add_all(
-                [
-                    Machine(id="MACHINE-001", owner_email="admin@grog.com", name="Campus Norte", latitude=-17.8, longitude=-63.2, status="online"),
-                    Machine(id="MACHINE-002", owner_email="admin@grog.com", name="Campus Sur", latitude=-17.81, longitude=-63.22, status="offline"),
-                ]
-            )
-        if db.query(Product).count() == 0:
-            db.add_all([
-                Product(id="PROD-1", sku="SODA-001", name="Soda", price=8.5), 
-                Product(id="PROD-2", sku="CHIPS-002", name="Chips", price=6.0),
-                Product(id="PROD-NONE", sku="NONE", name="Vacío", price=0.0)
-            ])
-        
-        if db.query(Inventory).count() == 0:
-            # Asegurar 16 slots para MACHINE-001
-            slots = []
-            for row in ['A', 'B', 'C', 'D']:
-                for col in range(1, 5):
-                    slot_name = f"{row}{col}"
-                    prod_id = "PROD-1" if row in ['A', 'B'] else "PROD-2"
-                    stype = "soda" if row in ['A', 'B'] else "snack"
-                    slots.append(Inventory(
-                        id=str(uuid4()), 
-                        machine_id="MACHINE-001", 
-                        product_id=prod_id, 
-                        slot=slot_name, 
-                        stock=10, 
-                        capacity=20, 
-                        price=8.5 if stype=="soda" else 6.0,
-                        is_enabled=True,
-                        slot_type=stype
-                    ))
-            db.add_all(slots)
-            
+        # 1. Asegurar máquinas base
+        default_machines = [
+            ("MACHINE-001", "admin@grog.com", "Campus Norte (Snacks)", -17.8, -63.2, "online", "SNACK_VENDING", "SIMULATED", "MDB", "GROG Twin SnackMaster"),
+            ("VENDING-01", "admin@grog.com", "Expendedora Snacks Unity", -17.801, -63.201, "online", "SNACK_VENDING", "SIMULATED", "MDB", "GROG Twin SnackMaster"),
+            ("COOLER-01", "admin@grog.com", "Bebidas Refrigeradas Campus", -17.805, -63.205, "online", "COOLER_DRINKS", "SIMULATED", "MDB", "GROG Twin ColdVendor"),
+            ("COFFEE-01", "admin@grog.com", "Cafetería Barista Campus", -17.810, -63.210, "online", "COFFEE_MACHINE", "SIMULATED", "MDB", "GROG Twin Barista"),
+            ("MACHINE-002", "admin@grog.com", "Campus Sur (Física)", -17.815, -63.220, "offline", "SNACK_VENDING", "PHYSICAL", "MDB", "FAS Fast 1050 / ESP32"),
+        ]
+
+        for mid, owner, name, lat, lng, st, mtype, env, proto, model in default_machines:
+            m = db.get(Machine, mid)
+            if not m:
+                m = Machine(
+                    id=mid,
+                    owner_email=owner,
+                    name=name,
+                    latitude=lat,
+                    longitude=lng,
+                    status=st,
+                    machine_type=mtype,
+                    environment=env,
+                    protocol=proto,
+                    brand_model=model,
+                    is_claimed=1
+                )
+                db.add(m)
+                db.flush()
+            else:
+                # Actualizar campos enriquecidos si faltan
+                if not getattr(m, "machine_type", None):
+                    m.machine_type = mtype
+                if not getattr(m, "environment", None):
+                    m.environment = env
+                if not getattr(m, "protocol", None):
+                    m.protocol = proto
+                if not getattr(m, "brand_model", None):
+                    m.brand_model = model
+
+            # Auto provisionar inventario template para cada máquina
+            _provision_machine_template(db, mid, mtype)
+
         if db.query(GlobalSetting).filter(GlobalSetting.key == "banner_url").count() == 0:
             db.add(GlobalSetting(key="banner_url", value="https://via.placeholder.com/400x100?text=Publicidad+Grog"))
-            
-        db.commit()
 
+        db.commit()
 
 _seed()
 
@@ -236,7 +327,45 @@ def list_machines(owner_email: str | None = None) -> dict:
         if owner_email:
             query = query.filter(Machine.owner_email == owner_email)
         machines = query.all()
-        return {"machines": [{"id": m.id, "owner_email": m.owner_email, "name": m.name, "status": m.status, "lat": m.latitude, "lng": m.longitude} for m in machines]}
+        return {
+            "machines": [
+                {
+                    "id": m.id,
+                    "owner_email": m.owner_email,
+                    "name": m.name,
+                    "status": m.status,
+                    "lat": m.latitude,
+                    "lng": m.longitude,
+                    "machine_type": getattr(m, "machine_type", "SNACK_VENDING"),
+                    "environment": getattr(m, "environment", "SIMULATED"),
+                    "protocol": getattr(m, "protocol", "MDB"),
+                    "brand_model": getattr(m, "brand_model", "GROG Virtual Twin"),
+                    "is_claimed": bool(getattr(m, "is_claimed", 1)),
+                }
+                for m in machines
+            ]
+        }
+
+
+@app.get("/api/v1/machines/{machine_id}")
+def get_machine(machine_id: str) -> dict:
+    with SessionLocal() as db:
+        m = db.get(Machine, machine_id)
+        if not m:
+            raise HTTPException(status_code=404, detail="Machine not found")
+        return {
+            "id": m.id,
+            "owner_email": m.owner_email,
+            "name": m.name,
+            "status": m.status,
+            "lat": m.latitude,
+            "lng": m.longitude,
+            "machine_type": getattr(m, "machine_type", "SNACK_VENDING"),
+            "environment": getattr(m, "environment", "SIMULATED"),
+            "protocol": getattr(m, "protocol", "MDB"),
+            "brand_model": getattr(m, "brand_model", "GROG Virtual Twin"),
+            "is_claimed": bool(getattr(m, "is_claimed", 1)),
+        }
 
 
 @app.get("/api/v1/machines/{machine_id}/inventory")
@@ -616,3 +745,285 @@ def update_machine_config(machine_id: str, req: MachineConfigRequest) -> dict:
         
     return {"status": "updated", "machine_id": machine_id, "config": cfg}
 
+
+# ─── MÓDULO DE PROVISIONAMIENTO Y VINCULACIÓN SEGURA DE MÁQUINAS ──────────────
+
+class ProvisioningTokenRequest(BaseModel):
+    machine_id: str
+    machine_type: str | None = None      # SNACK_VENDING, COOLER_DRINKS, COFFEE_MACHINE
+    environment: str | None = None       # SIMULATED, PHYSICAL
+    protocol: str | None = None          # MDB, PULSE, PROPRIETARY
+    brand_model: str | None = None
+    name: str | None = None
+
+
+class ClaimMachineRequest(BaseModel):
+    code_or_token: str
+    owner_email: str
+    name: str | None = None
+
+
+import io
+import base64
+import qrcode
+
+def _generate_qr_base64(text: str) -> str:
+    try:
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=8,
+            border=2,
+        )
+        qr.add_data(text)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception as e:
+        print(f"Error generating real QR: {e}")
+        return ""
+
+
+@app.post("/api/v1/machines/provisioning/generate-token")
+def generate_provisioning_token(req: ProvisioningTokenRequest) -> dict:
+    with SessionLocal() as db:
+        m = db.get(Machine, req.machine_id)
+        
+        # Determinar defaults según machine_id si es nueva
+        default_type = "SNACK_VENDING"
+        default_name = "Expendedora de Snacks"
+        mid_upper = req.machine_id.upper()
+        if "COOLER" in mid_upper:
+            default_type = "COOLER_DRINKS"
+            default_name = "Bebidas Refrigeradas"
+        elif "COFFEE" in mid_upper:
+            default_type = "COFFEE_MACHINE"
+            default_name = "Cafetería Especial"
+
+        env = req.environment or ("SIMULATED" if ("VENDING" in mid_upper or "COOLER" in mid_upper or "COFFEE" in mid_upper) else "PHYSICAL")
+        m_type = req.machine_type or default_type
+        brand = req.brand_model or ("GROG Virtual Twin v2" if env == "SIMULATED" else "ESP32 Hardware VMC")
+
+        if not m:
+            m = Machine(
+                id=req.machine_id,
+                owner_email="pending@grog.com",
+                name=req.name or f"{default_name} ({req.machine_id})",
+                latitude=-17.8,
+                longitude=-63.2,
+                status="online",
+                machine_type=m_type,
+                environment=env,
+                protocol=req.protocol or "MDB",
+                brand_model=brand,
+                is_claimed=0
+            )
+            db.add(m)
+            db.flush()
+        else:
+            if req.machine_type:
+                m.machine_type = req.machine_type
+            if req.environment:
+                m.environment = req.environment
+            if req.brand_model:
+                m.brand_model = req.brand_model
+            if req.name:
+                m.name = req.name
+
+        # Generar PIN de 6 dígitos único y token de vinculación
+        pin_code = f"{random.randint(100000, 999999)}"
+        token_str = f"GROG-PAIR:{m.id}:{uuid4().hex[:10]}"
+        ttl_seconds = 300  # 5 minutos de validez estricta
+
+        m.activation_code = pin_code
+        m.activation_token = token_str
+        m.activation_expires_at = time.time() + ttl_seconds
+        m.is_claimed = 0  # Reabre vinculación hasta que sea reclamada
+
+        qr_image = _generate_qr_base64(token_str)
+
+        db.commit()
+
+        return {
+            "status": "ready",
+            "machine_id": m.id,
+            "pairing_code": pin_code,
+            "pairing_token": token_str,
+            "qr_image": qr_image,
+            "expires_in": ttl_seconds,
+            "machine_type": m.machine_type,
+            "environment": m.environment,
+            "protocol": m.protocol,
+            "brand_model": m.brand_model,
+            "name": m.name
+        }
+
+
+@app.post("/api/v1/machines/{machine_id}/factory-reset")
+def factory_reset_machine(machine_id: str) -> dict:
+    """Accionado al presionar el botón físico iluminado de reset en la máquina."""
+    with SessionLocal() as db:
+        m = db.get(Machine, machine_id)
+        if not m:
+            raise HTTPException(status_code=404, detail="Machine not found")
+
+        old_owner = m.owner_email
+
+        # 1. Desvincular de la cuenta actual
+        m.owner_email = "pending@grog.com"
+        m.is_claimed = 0
+
+        # 2. Generar nuevo PIN y Token
+        pin_code = f"{random.randint(100000, 999999)}"
+        token_str = f"GROG-PAIR:{m.id}:{uuid4().hex[:10]}"
+        ttl_seconds = 300
+
+        m.activation_code = pin_code
+        m.activation_token = token_str
+        m.activation_expires_at = time.time() + ttl_seconds
+
+        # 3. Generar imagen QR real
+        qr_image = _generate_qr_base64(token_str)
+
+        db.commit()
+
+        # 4. Notificar al dueño anterior
+        if old_owner and old_owner != "pending@grog.com":
+            try:
+                with httpx.Client() as client:
+                    client.post(
+                        f"{NOTIFICATION_SERVICE_URL}/api/v1/notifications/send",
+                        json={
+                            "user_email": old_owner,
+                            "title": "⚠️ Máquina Desvinculada (Reset de Fábrica)",
+                            "summary": f"{m.name} fue reiniciada",
+                            "description": f"Se ha presionado el botón físico de reset en {m.name} ({m.id}). La máquina ha sido desvinculada de su cuenta para un nuevo propietario.",
+                            "type": "warning"
+                        },
+                        timeout=2.0
+                    )
+            except Exception as e:
+                print(f"WARN sending reset notification: {e}")
+
+        return {
+            "status": "reset_completed",
+            "machine_id": m.id,
+            "message": "Máquina restablecida y desvinculada exitosamente",
+            "previous_owner": old_owner,
+            "pairing_code": pin_code,
+            "pairing_token": token_str,
+            "qr_image": qr_image,
+            "expires_in": ttl_seconds,
+            "machine_type": m.machine_type,
+            "environment": m.environment,
+            "protocol": m.protocol,
+            "brand_model": m.brand_model,
+            "name": m.name
+        }
+
+
+@app.get("/api/v1/machines/provisioning/status/{machine_id}")
+def get_provisioning_status(machine_id: str) -> dict:
+    with SessionLocal() as db:
+        m = db.get(Machine, machine_id)
+        if not m:
+            raise HTTPException(status_code=404, detail="Machine not found")
+        
+        now = time.time()
+        is_active = bool(m.activation_expires_at and now < m.activation_expires_at)
+        seconds_left = max(0, int(m.activation_expires_at - now)) if is_active else 0
+
+        return {
+            "machine_id": m.id,
+            "is_claimed": bool(m.is_claimed),
+            "owner_email": m.owner_email,
+            "has_active_token": is_active,
+            "seconds_left": seconds_left,
+            "machine_type": getattr(m, "machine_type", "SNACK_VENDING"),
+            "environment": getattr(m, "environment", "SIMULATED"),
+            "protocol": getattr(m, "protocol", "MDB"),
+            "brand_model": getattr(m, "brand_model", "GROG Virtual Twin"),
+            "name": m.name
+        }
+
+
+@app.post("/api/v1/machines/provisioning/claim")
+def claim_machine(req: ClaimMachineRequest) -> dict:
+    clean_target = req.code_or_token.strip()
+    if not clean_target:
+        raise HTTPException(status_code=400, detail="Debe proporcionar el código PIN o QR de vinculación.")
+
+    if "token=" in clean_target:
+        clean_target = clean_target.split("token=")[-1].split("&")[0]
+    elif "code=" in clean_target:
+        clean_target = clean_target.split("code=")[-1].split("&")[0]
+
+    with SessionLocal() as db:
+        now = time.time()
+        # Buscar por código PIN de 6 dígitos o por token completo
+        m = db.query(Machine).filter(
+            (Machine.activation_code == clean_target) | (Machine.activation_token == clean_target)
+        ).first()
+
+        if not m:
+            raise HTTPException(
+                status_code=404,
+                detail="Código de vinculación no encontrado. Asegúrese de activar el Modo Instalador en la máquina."
+            )
+
+        if not m.activation_expires_at or now >= m.activation_expires_at:
+            raise HTTPException(
+                status_code=400,
+                detail="El código de activación ha expirado (validez: 5 minutos). Active el Modo Instalador en la máquina para generar uno nuevo."
+            )
+
+        # Vincular máquina al nuevo propietario
+        m.owner_email = req.owner_email.strip()
+        m.is_claimed = 1
+        m.activation_code = None
+        m.activation_token = None
+        m.activation_expires_at = None
+
+        if req.name and req.name.strip():
+            m.name = req.name.strip()
+
+        # Provisionar slots del catálogo si la máquina está vacía
+        _provision_machine_template(db, m.id, m.machine_type)
+
+        db.commit()
+
+        # Enviar notificación de confirmación
+        try:
+            env_label = "Virtual (Gemelo Digital)" if m.environment == "SIMULATED" else "Física (Hardware Edge)"
+            with httpx.Client() as client:
+                client.post(
+                    f"{NOTIFICATION_SERVICE_URL}/api/v1/notifications/send",
+                    json={
+                        "user_email": m.owner_email,
+                        "title": "🎉 Máquina Vinculada con Éxito",
+                        "summary": f"{m.name} ({m.id}) asignada",
+                        "description": f"Se ha registrado exitosamente la máquina {m.name} [{m.id}] tipo {m.machine_type} ({env_label}) a su cuenta.",
+                        "type": "success"
+                    },
+                    timeout=2.0
+                )
+        except Exception as e:
+            print(f"WARN sending claim notification: {e}")
+
+        return {
+            "status": "success",
+            "message": f"Máquina vinculada con éxito como {'Virtual (Gemelo Digital)' if m.environment == 'SIMULATED' else 'Física'}",
+            "machine": {
+                "id": m.id,
+                "name": m.name,
+                "owner_email": m.owner_email,
+                "machine_type": m.machine_type,
+                "environment": m.environment,
+                "protocol": m.protocol,
+                "brand_model": m.brand_model,
+                "status": m.status,
+                "is_claimed": True
+            }
+        }

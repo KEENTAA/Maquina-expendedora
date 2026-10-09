@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <TFT_eSPI.h>
@@ -63,14 +64,94 @@ const float REPOSO_MAX_CM = 35.0; // Menor a 30cm o mayor a 35cm -> PRODUCTO ENT
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ================= CONFIGURACION SISTEMA ==================
-const char* WIFI_SSID     = "ar-HP-Laptop-15-da2xxx";
-const char* WIFI_PASSWORD = "123456789";
-String SERVER_IP          = "10.42.0.1";
-const char* MACHINE_ID    = "MACHINE-001";
-const int   WEBHOOK_PORT  = 8081;
-const unsigned long POLL_INTERVAL_MS     = 1500;
+// Dominio público NGROK para el código QR (que escanean los celulares con 4G):
+String      NGROK_DOMAIN       = "passivism-sighing-condense.ngrok-free.dev";
+
+// Conexión interna del ESP32 hacia el servidor central de la máquina (Laptop):
+// false: comunicación local directa con la Laptop (10.42.0.1) -> 2ms respuesta, sin caídas SSL
+// true:  fuerza al ESP32 a salir por ngrok cloud
+const bool  USE_NGROK_FOR_API  = false;
+
+const char* WIFI_SSID          = "ar-HP-Laptop-15-da2xxx";
+const char* WIFI_PASSWORD      = "123456789";
+String      SERVER_IP          = "10.42.0.1";
+const char* MACHINE_ID         = "MACHINE-001";
+const int   WEBHOOK_PORT       = 8081;
+const unsigned long POLL_INTERVAL_MS      = 1500;
 const unsigned long TELEMETRY_INTERVAL_MS = 5000;
 // ==========================================================
+
+String qrBaseUrl() {
+  // EL CÓDIGO QR SIEMPRE LLEVA NGROK para que cualquier teléfono lo abra desde internet 4G/5G
+  return String("https://") + NGROK_DOMAIN + "/p/8010";
+}
+
+String baseUrl() {
+  if (USE_NGROK_FOR_API) return String("https://") + NGROK_DOMAIN + "/p/8010";
+  return String("http://") + SERVER_IP + ":8010";
+}
+
+String vendingUrl() {
+  if (USE_NGROK_FOR_API) return String("https://") + NGROK_DOMAIN + "/p/8040";
+  return String("http://") + SERVER_IP + ":8040";
+}
+
+String iotUrl() {
+  if (USE_NGROK_FOR_API) return String("https://") + NGROK_DOMAIN + "/p/8050";
+  return String("http://") + SERVER_IP + ":8050";
+}
+
+// Certificado Root CA oficial de Let's Encrypt (ISRG Root X1) que firma *.ngrok-free.dev
+const char* LETSE_ENCRYPT_CA = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
+3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
+NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
+ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
+TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
+jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
+oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
+4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
+mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
+emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
+-----END CERTIFICATE-----
+)EOF";
+
+const char *alpnProtocols[] = {"http/1.1", NULL};
+
+void setupHttpClient(HTTPClient &http, WiFiClientSecure &client, const String &url) {
+  if (url.startsWith("https://")) {
+    client.setCACert(LETSE_ENCRYPT_CA);
+    client.setAlpnProtocols(alpnProtocols);
+    client.setHandshakeTimeout(30); // 30s para handshake TLS mbedTLS
+    http.begin(client, url);
+  } else {
+    http.begin(url);
+  }
+  http.setConnectTimeout(15000); // 15s para TCP connect + TLS (evita timeout por defecto de 5s)
+  http.setTimeout(15000);        // 15s para transferencias HTTP
+  http.addHeader("ngrok-skip-browser-warning", "1");
+  http.addHeader("User-Agent", "ESP32-Vending");
+}
 
 WebServer webhookServer(WEBHOOK_PORT);
 String currentTxId = "", inputCodigo = "", precioSeleccionado = "10.00";
@@ -85,9 +166,6 @@ unsigned long lastPendingActionPoll = 0;
 unsigned long lastCatalogPoll = 0;
 bool webhookPaymentPending = false;
 bool waitingForPayment = false;
-
-String baseUrl() { return String("http://") + SERVER_IP + ":8010"; }
-String vendingUrl() { return String("http://") + SERVER_IP + ":8040"; }
 
 
 // --- UTILIDADES ---
@@ -237,7 +315,7 @@ void procesarPicoWH() {
       } else if (picoUartBuf.startsWith("NFC:")) {
         picoNfcUid = picoUartBuf.substring(4);
         Serial.printf("[PICO] NFC UID: %s\n", picoNfcUid.c_str());
-        // TODO: aqui puedes autenticar el UID contra el backend
+        enviarNfcScan(picoNfcUid);
       } else if (picoUartBuf.indexOf("PONG") != -1) {
         Serial.println("[PICO] >>> ¡PONG RECIBIDO! Pico WH responde correctamente. <<<");
       }
@@ -246,6 +324,19 @@ void procesarPicoWH() {
       picoUartBuf += c;
     }
   }
+}
+
+void enviarNfcScan(const String &uid) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  WiFiClientSecure client;
+  HTTPClient http;
+  String url = iotUrl() + "/api/v1/iot/nfc/scan";
+  setupHttpClient(http, client, url);
+  http.addHeader("Content-Type", "application/json");
+  String body = "{\"machine_id\":\"" + String(MACHINE_ID) + "\",\"uid\":\"" + uid + "\",\"source\":\"PICO_WH\"}";
+  int code = http.POST(body);
+  Serial.printf("[NFC HTTP] Enviado UID al backend IoT. Codigo: %d\n", code);
+  http.end();
 }
 
 /**
@@ -319,14 +410,27 @@ String extractTxId(const String& body) {
 
 // Envía telemetría usando la temperatura recibida del Pico WH
 void enviarTelemetria() {
-  if (picoTemperatura == -99.0) return; // Sin dato válido aún
+  if (picoTemperatura == -99.0 || WiFi.status() != WL_CONNECTED) return; // Sin dato válido aún
+  
+  // 1. Enviar al Orquestador
+  WiFiClientSecure client;
   HTTPClient http;
   String url = baseUrl() + "/api/v1/machines/" + MACHINE_ID + "/telemetry";
-  http.begin(url);
+  setupHttpClient(http, client, url);
   http.addHeader("Content-Type", "application/json");
   String body = "{\"temperature\":" + String(picoTemperatura) + ", \"ip\":\"" + WiFi.localIP().toString() + "\"}";
   http.POST(body);
   http.end();
+
+  // 2. Enviar al IoT Bridge Service
+  WiFiClientSecure clientIot;
+  HTTPClient httpIot;
+  String urlIot = iotUrl() + "/api/v1/iot/telemetry";
+  setupHttpClient(httpIot, clientIot, urlIot);
+  httpIot.addHeader("Content-Type", "application/json");
+  String bodyIot = "{\"machine_id\":\"" + String(MACHINE_ID) + "\",\"temperature\":" + String(picoTemperatura) + ",\"humidity\":40.0,\"motor_status\":\"OK\",\"status\":\"online\"}";
+  httpIot.POST(bodyIot);
+  httpIot.end();
 }
 
 void dibujarBannerCodigo() {
@@ -352,10 +456,10 @@ void dibujarBannerCodigo() {
 
 void fetchSessionCode() {
   if (WiFi.status() != WL_CONNECTED) return;
+  WiFiClientSecure client;
   HTTPClient http;
-  http.setTimeout(3000);
   String url = vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/session-code";
-  http.begin(url);
+  setupHttpClient(http, client, url);
   int httpCode = http.GET();
   if (httpCode == 200) {
     String payload = http.getString();
@@ -372,6 +476,10 @@ void fetchSessionCode() {
       while (sEnd < payload.length() && payload[sEnd] >= '0' && payload[sEnd] <= '9') sEnd++;
       currentCodeSecondsLeft = payload.substring(sStart, sEnd).toInt();
     }
+  } else {
+    char sslErr[128] = {0};
+    int errCode = client.lastError(sslErr, sizeof(sslErr));
+    Serial.printf("[SESSION CODE] ERROR HTTP: %d | SSL code: %d (%s)\n", httpCode, errCode, sslErr);
   }
   http.end();
 }
@@ -388,11 +496,11 @@ void mostrarCatalogo(bool limpiarPantallaCompleta) {
     return;
   }
 
+  WiFiClientSecure client;
   HTTPClient http;
-  http.setTimeout(4000); 
   String url = vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/inventory?include_images=false&only_enabled=true";
   
-  http.begin(url);
+  setupHttpClient(http, client, url);
   int httpCode = http.GET();
   
   // Limpiar solo el área de productos entre banner y pie de pantalla
@@ -435,7 +543,10 @@ void mostrarCatalogo(bool limpiarPantallaCompleta) {
       pos = pPos + 5; 
     }
   } else {
-    Serial.print("ERROR HTTP: "); Serial.println(httpCode);
+    char sslErr[128] = {0};
+    int errCode = client.lastError(sslErr, sizeof(sslErr));
+    Serial.printf("[CATALOGO] ERROR HTTP: %d | SSL code: %d (%s) | Free Heap: %d\n",
+                  httpCode, errCode, sslErr, ESP.getFreeHeap());
     tft.setCursor(10, 50); tft.setTextColor(TFT_RED); tft.print("ERROR: "); tft.print(httpCode);
   }
   http.end();
@@ -461,12 +572,12 @@ void toggleLights() {
 
 void registrarIntencionYMostrarQR() {
   lastActivityTime = millis();
+  WiFiClientSecure client;
   HTTPClient http;
   
   // 1. Obtener info del slot y verificar si está habilitado
   String slotUrl = vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/slots/" + inputCodigo;
-  http.setTimeout(4000);
-  http.begin(slotUrl);
+  setupHttpClient(http, client, slotUrl);
   int httpCode = http.GET();
   bool canBuy = false;
   
@@ -503,20 +614,23 @@ void registrarIntencionYMostrarQR() {
   }
 
   // 2. Registrar transaccion en orquestador
-  http.begin(baseUrl() + "/api/v1/transactions/init");
-  http.addHeader("Content-Type", "application/json");
+  WiFiClientSecure clientTx;
+  HTTPClient httpTx;
+  String initUrl = baseUrl() + "/api/v1/transactions/init";
+  setupHttpClient(httpTx, clientTx, initUrl);
+  httpTx.addHeader("Content-Type", "application/json");
   String regBody = "{\"machine_id\":\"" + String(MACHINE_ID) + "\",\"product_id\":\"" + inputCodigo + "\",\"amount\":" + precioSeleccionado + "}";
-  if (http.POST(regBody) == 200) {
-    currentTxId = extractTxId(http.getString());
+  if (httpTx.POST(regBody) == 200) {
+    currentTxId = extractTxId(httpTx.getString());
   }
-  http.end();
+  httpTx.end();
 
   distanciaInicial = medirDistancia();
   tft.fillScreen(TFT_WHITE); tft.setTextColor(TFT_BLACK); tft.setTextSize(2); tft.setCursor(10, 5);
   tft.printf("PAGAR %s: Bs%s", inputCodigo.c_str(), precioSeleccionado.c_str());
   
-  // 3. Generar y mostrar QR
-  String payload = baseUrl() + "/init/" + MACHINE_ID + "?product_id=" + inputCodigo + "&amount=" + precioSeleccionado;
+  // 3. Generar y mostrar QR (Siempre con dominio público NGROK para escaneo móvil desde celulares)
+  String payload = qrBaseUrl() + "/init/" + MACHINE_ID + "?product_id=" + inputCodigo + "&amount=" + precioSeleccionado;
   esp_qrcode_config_t cfg = ESP_QRCODE_CONFIG_DEFAULT();
   cfg.display_func = [](esp_qrcode_handle_t qrcode) {
     int qrSize = esp_qrcode_get_size(qrcode); int scale = 4;
@@ -646,12 +760,13 @@ void processPaidTransaction(String txId) {
 
   // 4. NOTIFICAR AL BACKEND (M1 y M2-mínimo)
   if (WiFi.status() == WL_CONNECTED) {
+    WiFiClientSecure client;
     HTTPClient http;
     String endPoint = detectado ? "/dispense-result" : "/refund";
     String url = baseUrl() + "/api/v1/transactions/" + txId + endPoint;
     
     Serial.printf("[HTTP] Notificando a: %s\n", url.c_str());
-    http.begin(url);
+    setupHttpClient(http, client, url);
     http.addHeader("Content-Type", "application/json");
     
     // Enviamos M1 como initial_distance y el M2 más bajo como final_distance
@@ -676,15 +791,39 @@ void connectWifi() {
   Serial.print("Conectando a: "); Serial.println(WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   int retry = 0;
-  while (WiFi.status() != WL_CONNECTED && retry < 20) { 
+  while (WiFi.status() != WL_CONNECTED && retry < 30) { 
     delay(500); 
     Serial.print("."); 
     retry++;
   }
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWiFi OK");
+    Serial.printf("  [WIFI] IP asignada: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("  [WIFI] Puerta enlace: %s\n", WiFi.gatewayIP().toString().c_str());
+    Serial.printf("  [WIFI] Servidor DNS:  %s\n", WiFi.dnsIP().toString().c_str());
   } else {
     Serial.println("\nError: WiFi no conectado.");
+  }
+}
+
+void sincronizarHoraNTP() {
+  Serial.print("[NTP] Sincronizando fecha/hora para certificados SSL");
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  time_t now = time(nullptr);
+  int retry = 0;
+  while (now < 1700000000 && retry < 25) {
+    delay(400);
+    Serial.print(".");
+    now = time(nullptr);
+    retry++;
+  }
+  if (now >= 1700000000) {
+    struct tm ti;
+    gmtime_r(&now, &ti);
+    Serial.printf("\n[NTP] OK! Fecha: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                  ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday, ti.tm_hour, ti.tm_min, ti.tm_sec);
+  } else {
+    Serial.println("\n[NTP] Advertencia: Timeout en NTP (se continuara).");
   }
 }
 
@@ -712,12 +851,21 @@ void setup() {
   tft.setTextColor(TFT_YELLOW);
   tft.println("A GROG");
   
-  // Intentar conectar mientras se muestra la bienvenida
+  // Conectar WiFi y sincronizar reloj
   connectWifi();
-  delay(2000); 
+  sincronizarHoraNTP(); 
 
-  Serial.println("Configurando IP fija...");
-  SERVER_IP = "10.42.0.1";
+  if (USE_NGROK_FOR_API) {
+    Serial.printf("Configurado para API NGROK: %s\n", NGROK_DOMAIN.c_str());
+    IPAddress resolvedIP;
+    Serial.print("[DNS] Verificando resolucion NGROK... ");
+    if (WiFi.hostByName(NGROK_DOMAIN.c_str(), resolvedIP)) {
+      Serial.printf("OK! IP: %s\n", resolvedIP.toString().c_str());
+    }
+  } else {
+    Serial.printf("[SYSTEM] API interna comunicando por RED LOCAL: http://%s (latencia 2ms, sin errores SSL)\n", SERVER_IP.c_str());
+    Serial.printf("[SYSTEM] Dominio NGROK público para QR de pago: https://%s\n", NGROK_DOMAIN.c_str());
+  }
   
   webhookServer.on("/payment-confirmed", HTTP_POST, [](){
     String txId = webhookServer.arg("tx_id");
@@ -767,8 +915,9 @@ void loop() {
   if (now - lastPoll >= POLL_INTERVAL_MS) {
     lastPoll = now;
     if (WiFi.status() == WL_CONNECTED) {
+      WiFiClientSecure client;
       HTTPClient http; 
-      http.begin(baseUrl() + "/api/v1/machines/" + MACHINE_ID + "/next-paid");
+      setupHttpClient(http, client, baseUrl() + "/api/v1/machines/" + MACHINE_ID + "/next-paid");
       if (http.GET() == 200) {
         String res = http.getString();
         if (res.indexOf("\"tx_id\":\"") != -1) {
@@ -795,8 +944,9 @@ void loop() {
   if (now - lastPollCommands >= 3000) {
     lastPollCommands = now;
     if (WiFi.status() == WL_CONNECTED) {
+      WiFiClientSecure client;
       HTTPClient http;
-      http.begin(baseUrl() + "/api/v1/admin/commands/poll/" + String(MACHINE_ID));
+      setupHttpClient(http, client, baseUrl() + "/api/v1/admin/commands/poll/" + String(MACHINE_ID));
       if (http.GET() == 200) {
         String payload = http.getString();
         // Solo refrescamos si el payload contiene comandos reales (no una lista vacía)
@@ -823,8 +973,9 @@ void loop() {
   if (!waitingForPayment && (now - lastPendingActionPoll >= 1000)) {
     lastPendingActionPoll = now;
     if (WiFi.status() == WL_CONNECTED) {
+      WiFiClientSecure client;
       HTTPClient http;
-      http.begin(vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/pending-action");
+      setupHttpClient(http, client, vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/pending-action");
       if (http.GET() == 200) {
         String act = http.getString();
         if (act.indexOf("\"action\":\"generate_qr\"") != -1) {

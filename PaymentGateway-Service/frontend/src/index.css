@@ -7,8 +7,8 @@
   line-height: 1.5;
   font-weight: 400;
 
-  color: #0F172A;
-  background-color: #F8FAFC;
+  color: #F8FAFC;
+  background-color: #080C15;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -21,12 +21,12 @@ body {
   display: block;
   min-width: 320px;
   min-height: 100vh;
-  background-color: #F8FAFC;
-  color: #0F172A;
+  background-color: #080C15;
+  color: #F8FAFC;
 }
 
-input, select, textarea, button {
-  color: #0F172A !important;
+input, select, textarea {
+  color: #0F172A;
 }
 
 #root {

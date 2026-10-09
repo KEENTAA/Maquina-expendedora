@@ -42,7 +42,7 @@ export default function Login() {
         { 
           theme: 'outline', 
           size: 'large', 
-          width: '100%', 
+          width: 350, 
           shape: 'pill',
           text: 'continue_with' 
         }

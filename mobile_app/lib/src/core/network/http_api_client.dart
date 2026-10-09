@@ -6,10 +6,28 @@ import 'package:http/http.dart' as http;
 
 import 'app_exception.dart';
 
+class _NgrokHeaderClient extends http.BaseClient {
+  final http.Client _inner;
+  _NgrokHeaderClient(this._inner);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    request.headers['ngrok-skip-browser-warning'] = '1';
+    return _inner.send(request);
+  }
+}
+
 class HttpApiClient {
   final http.Client _client;
 
-  HttpApiClient({http.Client? client}) : _client = client ?? http.Client();
+  HttpApiClient({http.Client? client}) : _client = _NgrokHeaderClient(client ?? http.Client());
+
+  Map<String, String> _mergeHeaders([Map<String, String>? headers]) {
+    return {
+      'ngrok-skip-browser-warning': '1',
+      ...?headers,
+    };
+  }
 
   Future<Map<String, dynamic>> getJson(
     Uri uri, {
@@ -17,7 +35,7 @@ class HttpApiClient {
     int retries = 2,
   }) async {
     final response = await _withRetry(
-      () => _client.get(uri, headers: headers),
+      () => _client.get(uri, headers: _mergeHeaders(headers)),
       retries: retries,
     );
     return _decodeObject(response);
@@ -29,7 +47,7 @@ class HttpApiClient {
     int retries = 2,
   }) async {
     final response = await _withRetry(
-      () => _client.get(uri, headers: headers),
+      () => _client.get(uri, headers: _mergeHeaders(headers)),
       retries: retries,
     );
     return _decodeList(response);
@@ -44,7 +62,7 @@ class HttpApiClient {
     final response = await _withRetry(
       () => _client.post(
         uri,
-        headers: {'Content-Type': 'application/json', ...?headers},
+        headers: _mergeHeaders({'Content-Type': 'application/json', ...?headers}),
         body: jsonEncode(body ?? <String, dynamic>{}),
       ),
       retries: retries,
@@ -62,7 +80,7 @@ class HttpApiClient {
     final response = await _withRetry(
       () => _client.put(
         uri,
-        headers: {'Content-Type': 'application/json', ...?headers},
+        headers: _mergeHeaders({'Content-Type': 'application/json', ...?headers}),
         body: jsonEncode(body ?? <String, dynamic>{}),
       ),
       retries: retries,
@@ -79,7 +97,7 @@ class HttpApiClient {
     final response = await _withRetry(
       () => _client.patch(
         uri,
-        headers: {'Content-Type': 'application/json', ...?headers},
+        headers: _mergeHeaders({'Content-Type': 'application/json', ...?headers}),
         body: jsonEncode(body ?? <String, dynamic>{}),
       ),
       retries: retries,

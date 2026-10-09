@@ -106,18 +106,58 @@ class AdminDashboardController extends ChangeNotifier {
       
       // Load inventories, stats and active session codes for all machines concurrently
       await Future.wait(machines.map((machine) async {
-        final machineId = machine['id'];
+        final machineId = machine['id']?.toString() ?? '';
+        if (machineId.isEmpty) return;
+
+        // Inventario por máquina
         try {
-          final results = await Future.wait([
-            _vendingApi.getInventory(machineId),
-            _api.getTopSellers(machineId: machineId),
-            _api.getFailedSlots(machineId: machineId),
-            _vendingApi.getSessionCode(machineId).catchError((_) => <String, dynamic>{}),
-          ]);
-          inventories[machineId] = (results[0] as Map<String, dynamic>)['items'] ?? [];
-          topSellers[machineId] = List<Map<String, dynamic>>.from((results[1] as Map<String, dynamic>)['items'] ?? []);
-          failedSlots[machineId] = List<Map<String, dynamic>>.from((results[2] as Map<String, dynamic>)['items'] ?? []);
-          machineSessionCodes[machineId] = results[3] as Map<String, dynamic>;
+          final invData = await _vendingApi.getInventory(machineId);
+          final rawItems = invData['items'];
+          if (rawItems is List) {
+            inventories[machineId] = rawItems
+                .map((e) => e is Map ? Map<String, dynamic>.from(e) : e)
+                .toList();
+          } else {
+            inventories[machineId] = [];
+          }
+        } catch (_) {
+          inventories[machineId] ??= [];
+        }
+
+        // Top sellers por máquina
+        try {
+          final topData = await _api.getTopSellers(machineId: machineId);
+          final rawTop = topData['items'];
+          if (rawTop is List) {
+            topSellers[machineId] = rawTop
+                .map((e) => e is Map ? Map<String, dynamic>.from(e) : <String, dynamic>{})
+                .toList();
+          } else {
+            topSellers[machineId] = [];
+          }
+        } catch (_) {
+          topSellers[machineId] ??= [];
+        }
+
+        // Ranuras con fallas por máquina
+        try {
+          final failData = await _api.getFailedSlots(machineId: machineId);
+          final rawFail = failData['items'];
+          if (rawFail is List) {
+            failedSlots[machineId] = rawFail
+                .map((e) => e is Map ? Map<String, dynamic>.from(e) : <String, dynamic>{})
+                .toList();
+          } else {
+            failedSlots[machineId] = [];
+          }
+        } catch (_) {
+          failedSlots[machineId] ??= [];
+        }
+
+        // Código de sesión activo
+        try {
+          final codeData = await _vendingApi.getSessionCode(machineId);
+          machineSessionCodes[machineId] = Map<String, dynamic>.from(codeData);
         } catch (_) {}
       }));
       
@@ -454,6 +494,68 @@ class AdminDashboardController extends ChangeNotifier {
       error = e.toString();
       notifyListeners();
       return false;
+    }
+  }
+
+  Future<Map<String, dynamic>> claimMachine({
+    required String codeOrToken,
+    required String ownerEmail,
+    String? name,
+  }) async {
+    try {
+      loading = true;
+      error = null;
+      notifyListeners();
+
+      final res = await _vendingApi.claimMachine(
+        codeOrToken: codeOrToken,
+        ownerEmail: ownerEmail,
+        name: name,
+      );
+
+      // Refresh list of machines and inventories
+      final machinesData = await _vendingApi.listMachines();
+      machines = machinesData['machines'] ?? [];
+
+      for (var machine in machines) {
+        final mId = machine['id'];
+        try {
+          final inv = await _vendingApi.getInventory(mId);
+          inventories[mId] = inv['items'] ?? [];
+        } catch (_) {}
+      }
+
+      loading = false;
+      notifyListeners();
+      return res;
+    } catch (e) {
+      loading = false;
+      error = e.toString();
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>> factoryResetMachine(String machineId) async {
+    try {
+      loading = true;
+      error = null;
+      notifyListeners();
+
+      final res = await _vendingApi.factoryResetMachine(machineId);
+
+      // Refresh list of machines and inventories
+      final machinesData = await _vendingApi.listMachines();
+      machines = machinesData['machines'] ?? [];
+
+      loading = false;
+      notifyListeners();
+      return res;
+    } catch (e) {
+      loading = false;
+      error = e.toString();
+      notifyListeners();
+      rethrow;
     }
   }
 

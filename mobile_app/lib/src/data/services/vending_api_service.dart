@@ -153,5 +153,56 @@ class VendingApiService {
     );
   }
 
+  Future<Map<String, dynamic>> generateProvisioningToken(String machineId, {
+    String? machineType,
+    String? environment,
+    String? protocol,
+    String? brandModel,
+    String? name,
+  }) {
+    final Map<String, dynamic> body = {'machine_id': machineId};
+    if (machineType != null) body['machine_type'] = machineType;
+    if (environment != null) body['environment'] = environment;
+    if (protocol != null) body['protocol'] = protocol;
+    if (brandModel != null) body['brand_model'] = brandModel;
+    if (name != null) body['name'] = name;
+
+    return _http.postJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/provisioning/generate-token'),
+      body: body,
+    );
+  }
+
+  Future<Map<String, dynamic>> getProvisioningStatus(String machineId) {
+    return _http.getJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/provisioning/status/$machineId'),
+    );
+  }
+
+  Future<Map<String, dynamic>> claimMachine({
+    required String codeOrToken,
+    required String ownerEmail,
+    String? name,
+  }) {
+    final Map<String, dynamic> body = {
+      'code_or_token': codeOrToken,
+      'owner_email': ownerEmail,
+    };
+    if (name != null && name.trim().isNotEmpty) {
+      body['name'] = name.trim();
+    }
+
+    return _http.postJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/provisioning/claim'),
+      body: body,
+    );
+  }
+
+  Future<Map<String, dynamic>> factoryResetMachine(String machineId) {
+    return _http.postJson(
+      Uri.parse('${AppConfig.vendingUrl}/api/v1/machines/$machineId/factory-reset'),
+      body: {},
+    );
+  }
 }
 

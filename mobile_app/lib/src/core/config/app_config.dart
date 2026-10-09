@@ -9,14 +9,23 @@ class AppConfig {
     formatted = formatted.replaceAll('http;//', 'http://');
     formatted = formatted.replaceAll('https;//', 'https://');
     if (!formatted.startsWith('http://') && !formatted.startsWith('https://')) {
-      formatted = 'http://$formatted';
+      if (formatted.contains('ngrok') || formatted.contains('cloudflare')) {
+        formatted = 'https://$formatted';
+      } else {
+        formatted = 'http://$formatted';
+      }
     }
 
     final uri = Uri.tryParse(formatted);
     if (uri == null || uri.host.isEmpty) return;
 
+    var scheme = uri.scheme;
+    if ((uri.host.contains('ngrok') || uri.host.contains('cloudflare')) && scheme == 'http') {
+      scheme = 'https';
+    }
+
     // Guardamos solo scheme + host para evitar puertos duplicados.
-    _baseUrl = '${uri.scheme}://${uri.host}';
+    _baseUrl = '$scheme://${uri.host}';
   }
 
   static String serviceUrl(int port) {
@@ -24,6 +33,16 @@ class AppConfig {
     if (uri == null || uri.host.isEmpty) {
       return 'http://10.0.2.2:$port';
     }
+
+    // Si es un túnel (ngrok, Cloudflare) o dominio público HTTPS sin soporte directo de puertos
+    if (uri.scheme == 'https' ||
+        uri.host.contains('ngrok') ||
+        uri.host.contains('trycloudflare.com') ||
+        uri.host.contains('cloudflare')) {
+      return '${uri.scheme}://${uri.host}/p/$port';
+    }
+
+    // Comportamiento local tradicional por IP (172.18.x.x:PORT o 10.0.2.2:PORT)
     return '${uri.scheme}://${uri.host}:$port';
   }
 

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1e2e"/>
+      <stop offset="100%" stop-color="#11111b"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a6e3a1"/>
+      <stop offset="100%" stop-color="#40a02b"/>
+    </linearGradient>
+    <linearGradient id="panelGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#313244"/>
+      <stop offset="100%" stop-color="#181825"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background Base -->
+  <rect x="6" y="6" width="116" height="116" rx="28" fill="url(#bgGrad)" stroke="#45475a" stroke-width="3"/>
+
+  <!-- Vending Machine Body -->
+  <rect x="26" y="22" width="76" height="84" rx="8" fill="url(#panelGrad)" stroke="#585b70" stroke-width="2.5"/>
+
+  <!-- Glass Display Window -->
+  <rect x="34" y="30" width="42" height="44" rx="4" fill="#181825" stroke="#45475a" stroke-width="1.5"/>
+  
+  <!-- Shelves and Soda Cans -->
+  <line x1="36" y1="44" x2="74" y2="44" stroke="#585b70" stroke-width="2"/>
+  <line x1="36" y1="58" x2="74" y2="58" stroke="#585b70" stroke-width="2"/>
+  
+  <!-- Cans Shelf 1 -->
+  <rect x="38" y="34" width="8" height="8" rx="2" fill="#f38ba8"/>
+  <rect x="50" y="34" width="8" height="8" rx="2" fill="#89b4fa"/>
+  <rect x="62" y="34" width="8" height="8" rx="2" fill="#a6e3a1"/>
+  
+  <!-- Cans Shelf 2 -->
+  <rect x="38" y="47" width="8" height="8" rx="2" fill="#fab387"/>
+  <rect x="50" y="47" width="8" height="8" rx="2" fill="#cba6f7"/>
+  <rect x="62" y="47" width="8" height="8" rx="2" fill="#94e2d5"/>
+
+  <!-- Pickup Tray -->
+  <rect x="34" y="82" width="42" height="16" rx="3" fill="#11111b" stroke="#313244" stroke-width="1.5"/>
+
+  <!-- Right Side Control Panel -->
+  <rect x="82" y="30" width="14" height="44" rx="3" fill="#1e1e2e" stroke="#45475a" stroke-width="1"/>
+  <!-- Keypad dots -->
+  <circle cx="86" cy="36" r="1.5" fill="#cdd6f4"/>
+  <circle cx="92" cy="36" r="1.5" fill="#cdd6f4"/>
+  <circle cx="86" cy="42" r="1.5" fill="#cdd6f4"/>
+  <circle cx="92" cy="42" r="1.5" fill="#cdd6f4"/>
+  <circle cx="86" cy="48" r="1.5" fill="#cdd6f4"/>
+  <circle cx="92" cy="48" r="1.5" fill="#cdd6f4"/>
+
+  <!-- Big Glowing Power Symbol -->
+  <circle cx="96" cy="94" r="18" fill="url(#bgGrad)" stroke="#a6e3a1" stroke-width="3"/>
+  <circle cx="96" cy="94" r="14" fill="url(#accentGrad)"/>
+  <!-- Power Icon in White -->
+  <path d="M96 85 L96 93" stroke="#11111b" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M91.5 89 A6.5 6.5 0 1 0 100.5 89" fill="none" stroke="#11111b" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

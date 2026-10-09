@@ -390,16 +390,104 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildAdminMachinesTab(BuildContext context) {
     final controller = context.watch<AdminDashboardController>();
+    final auth = context.watch<AuthController>();
+    final sessionEmail = auth.session?.email ?? 'admin@grog.com';
+
     if (controller.machines.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.developer_board_off_rounded, size: 52, color: Colors.grey),
+              const SizedBox(height: 12),
+              const Text('No hay máquinas vinculadas en tu cuenta', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 6),
+              Text('Activa el Modo Instalador en la máquina y vincúlala con su PIN.', style: TextStyle(color: Colors.grey.shade600, fontSize: 13), textAlign: TextAlign.center),
+              const SizedBox(height: 18),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4F46E5),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                ),
+                onPressed: () => _showClaimMachineDialog(context, controller, sessionEmail),
+                icon: const Icon(Icons.qr_code_scanner_rounded),
+                label: const Text('Vincular Máquina (PIN / QR)', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        ),
+      );
     }
 
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
+        // BANNER HEADER DE GESTIÓN Y VINCULACIÓN
+        Container(
+          margin: const EdgeInsets.only(bottom: 20),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF1E1B4B), Color(0xFF312E81)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF312E81).withValues(alpha: 0.25),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Flota de Expendedoras',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'Vincula terminales virtuales (Unity) o físicas (ESP32) con PIN seguro de 6 dígitos.',
+                      style: TextStyle(color: Colors.white.withValues(alpha: 0.75), fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6366F1),
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                onPressed: () => _showClaimMachineDialog(context, controller, sessionEmail),
+                icon: const Icon(Icons.qr_code_scanner_rounded, size: 18),
+                label: const Text('Vincular', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              ),
+            ],
+          ),
+        ),
+
         ...controller.machines.map((machine) {
           final machineId = machine['id'];
           final inventory = controller.inventories[machineId] ?? [];
+          final isVirtual = machine['environment'] == 'SIMULATED';
+          final mType = machine['machine_type'] ?? 'SNACK_VENDING';
+          String typeChipLabel = '🍿 Snacks';
+          if (mType == 'COOLER_DRINKS') typeChipLabel = '🥤 Bebidas';
+          if (mType == 'COFFEE_MACHINE') typeChipLabel = '☕ Café';
 
           return Card(
             margin: const EdgeInsets.only(bottom: 24),
@@ -412,10 +500,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const CircleAvatar(
+                      CircleAvatar(
                         radius: 22,
-                        backgroundColor: Color(0xFF4F46E5),
-                        child: Icon(Icons.settings_remote, color: Colors.white, size: 22),
+                        backgroundColor: isVirtual ? const Color(0xFF4F46E5) : const Color(0xFFD97706),
+                        child: Icon(
+                          isVirtual ? Icons.videogame_asset_rounded : Icons.bolt_rounded,
+                          color: Colors.white,
+                          size: 22,
+                        ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -428,12 +520,74 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              'ID: $machineId | Status: ${machine['status']}',
+                              'ID: $machineId | Modelo: ${machine['brand_model'] ?? 'Universal'}',
                               style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                            ),
+                            const SizedBox(height: 6),
+                            // BADGES: VIRTUAL/FÍSICA, TIPO Y PROTOCOLO
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 4,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: isVirtual ? const Color(0xFFEEF2FF) : const Color(0xFFFFFBEB),
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                      color: isVirtual ? const Color(0xFFC7D2FE) : const Color(0xFFFDE68A),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        isVirtual ? Icons.tv_rounded : Icons.developer_board_rounded,
+                                        size: 11,
+                                        color: isVirtual ? const Color(0xFF4338CA) : const Color(0xFFB45309),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        isVirtual ? 'VIRTUAL' : 'FÍSICA',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: isVirtual ? const Color(0xFF4338CA) : const Color(0xFFB45309),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.grey.shade100,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: Colors.grey.shade300),
+                                  ),
+                                  child: Text(
+                                    typeChipLabel,
+                                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.grey.shade50,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: Colors.grey.shade200),
+                                  ),
+                                  child: Text(
+                                    machine['protocol'] ?? 'MDB',
+                                    style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),
                       ),
+
                       // Status Badge
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -535,6 +689,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           tooltip: 'Configuración técnica',
                           icon: const Icon(Icons.settings, color: Color(0xFF4F46E5), size: 22),
                           onPressed: () => _showMachineSettingsDialog(context, controller, machineId),
+                        ),
+                        Container(width: 1, height: 20, color: Colors.grey.shade300),
+                        // 5. Desvincular / Reset
+                        IconButton(
+                          tooltip: 'Desvincular de mi cuenta',
+                          icon: const Icon(Icons.link_off_rounded, color: Colors.redAccent, size: 22),
+                          onPressed: () => _confirmFactoryReset(context, controller, machineId, machine['name'] ?? ''),
                         ),
                       ],
                     ),
@@ -1044,6 +1205,387 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  void _showClaimMachineDialog(BuildContext context, AdminDashboardController controller, String ownerEmail) {
+    final codeController = TextEditingController();
+    final nameController = TextEditingController();
+    bool isSubmitting = false;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (bottomCtx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Container(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 24,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+              ),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 44,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade300,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEEF2FF),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: const Icon(Icons.qr_code_scanner_rounded, color: Color(0xFF4F46E5), size: 26),
+                        ),
+                        const SizedBox(width: 14),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Vincular Máquina',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              ),
+                              SizedBox(height: 2),
+                              Text(
+                                'Detección automática Virtual o Física',
+                                style: TextStyle(fontSize: 12, color: Colors.grey),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: Colors.blue.shade200),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.info_outline_rounded, color: Colors.blue.shade800, size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              'En la máquina (Virtual en Unity o Física con ESP32), activa el "Modo Instalador" para generar el PIN de 6 dígitos seguro (válido por 5 minutos).',
+                              style: TextStyle(fontSize: 12, color: Colors.blue.shade900, height: 1.3),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    TextField(
+                      controller: codeController,
+                      textCapitalization: TextCapitalization.characters,
+                      autofocus: true,
+                      style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 16),
+                      decoration: InputDecoration(
+                        labelText: 'Código PIN o Token QR *',
+                        hintText: 'Ej: 894503 o escanea el QR',
+                        prefixIcon: const Icon(Icons.pin_rounded, color: Color(0xFF4F46E5)),
+                        suffixIcon: IconButton(
+                          tooltip: 'Escanear QR con cámara',
+                          icon: const Icon(Icons.qr_code_scanner_rounded, color: Color(0xFF4F46E5)),
+                          onPressed: () async {
+                            final scanned = await Navigator.push<String>(
+                              context,
+                              MaterialPageRoute(builder: (_) => const QrScannerScreen()),
+                            );
+                            if (scanned != null && scanned.trim().isNotEmpty) {
+                              setModalState(() {
+                                codeController.text = scanned.trim();
+                              });
+                            }
+                          },
+                        ),
+                        filled: true,
+                        fillColor: Colors.grey.shade50,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF4F46E5),
+                        side: const BorderSide(color: Color(0xFF818CF8)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      ),
+                      onPressed: () async {
+                        final scanned = await Navigator.push<String>(
+                          context,
+                          MaterialPageRoute(builder: (_) => const QrScannerScreen()),
+                        );
+                        if (scanned != null && scanned.trim().isNotEmpty) {
+                          setModalState(() {
+                            codeController.text = scanned.trim();
+                          });
+                        }
+                      },
+                      icon: const Icon(Icons.camera_alt_rounded, size: 20),
+                      label: const Text('Escanear Código QR con Cámara', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: nameController,
+                      decoration: InputDecoration(
+                        labelText: 'Nombre personalizado (Opcional)',
+                        hintText: 'Ej: Expendedora Auditorio Norte',
+                        prefixIcon: const Icon(Icons.badge_outlined, color: Colors.grey),
+                        filled: true,
+                        fillColor: Colors.grey.shade50,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF4F46E5),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        elevation: 0,
+                      ),
+                      onPressed: isSubmitting
+                          ? null
+                          : () async {
+                              final inputCode = codeController.text.trim();
+                              if (inputCode.isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('Por favor ingresa el código PIN o QR')),
+                                );
+                                return;
+                              }
+
+                              setModalState(() => isSubmitting = true);
+                              try {
+                                final res = await controller.claimMachine(
+                                  codeOrToken: inputCode,
+                                  ownerEmail: ownerEmail,
+                                  name: nameController.text.trim().isNotEmpty ? nameController.text.trim() : null,
+                                );
+
+                                if (bottomCtx.mounted) {
+                                  Navigator.pop(bottomCtx);
+                                }
+
+                                final machineData = res['machine'] as Map<String, dynamic>? ?? {};
+                                final isVirtual = machineData['environment'] == 'SIMULATED';
+                                final mType = machineData['machine_type'] ?? 'SNACK_VENDING';
+                                String typeLabel = '🍿 Expendedora de Snacks';
+                                if (mType == 'COOLER_DRINKS') typeLabel = '🥤 Bebidas Refrigeradas';
+                                if (mType == 'COFFEE_MACHINE') typeLabel = '☕ Máquina de Café';
+
+                                if (context.mounted) {
+                                  showDialog(
+                                    context: context,
+                                    builder: (diagCtx) {
+                                      return AlertDialog(
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                                        title: const Row(
+                                          children: [
+                                            Text('🎉 ', style: TextStyle(fontSize: 24)),
+                                            Expanded(
+                                              child: Text(
+                                                '¡Máquina Vinculada!',
+                                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        content: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              res['message'] ?? 'Máquina registrada con éxito en tu cuenta.',
+                                              style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+                                            ),
+                                            const SizedBox(height: 14),
+                                            Container(
+                                              padding: const EdgeInsets.all(12),
+                                              decoration: BoxDecoration(
+                                                color: Colors.grey.shade100,
+                                                borderRadius: BorderRadius.circular(14),
+                                              ),
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Row(
+                                                    children: [
+                                                      Container(
+                                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                                        decoration: BoxDecoration(
+                                                          color: isVirtual ? const Color(0xFFEEF2FF) : const Color(0xFFFFFBEB),
+                                                          borderRadius: BorderRadius.circular(8),
+                                                        ),
+                                                        child: Text(
+                                                          isVirtual ? '🎮 Entorno Virtual (Unity)' : '⚡ Hardware Físico (ESP32)',
+                                                          style: TextStyle(
+                                                            fontSize: 11,
+                                                            fontWeight: FontWeight.bold,
+                                                            color: isVirtual ? const Color(0xFF4338CA) : const Color(0xFFB45309),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                      const Spacer(),
+                                                      Text(
+                                                        machineData['protocol'] ?? 'MDB',
+                                                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  Text(
+                                                    'Equipo: ${machineData['name'] ?? ''}',
+                                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                                  ),
+                                                  Text(
+                                                    'Tipo: $typeLabel',
+                                                    style: TextStyle(fontSize: 12, color: Colors.grey.shade800),
+                                                  ),
+                                                  Text(
+                                                    'ID: ${machineData['id']}',
+                                                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(diagCtx),
+                                            child: const Text('Entendido', style: TextStyle(fontWeight: FontWeight.bold)),
+                                          ),
+                                        ],
+                                      );
+                                    },
+                                  );
+                                }
+                              } catch (e) {
+                                setModalState(() => isSubmitting = false);
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Error al vincular: ${e.toString().replaceAll('Exception:', '')}'),
+                                      backgroundColor: Colors.red.shade700,
+                                    ),
+                                  );
+                                }
+                              }
+                            },
+                      child: isSubmitting
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                            )
+                          : const Text(
+                              'Verificar y Vincular a mi Cuenta',
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _confirmFactoryReset(BuildContext context, AdminDashboardController controller, String machineId, String machineName) {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 28),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Desvincular Máquina',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '¿Deseas desvincular $machineName ($machineId) de tu cuenta?',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Al desvincularla, la máquina se liberará de la nube. Cualquier persona podrá pulsar su botón físico iluminado de reset para volver a vincularla a otra cuenta.',
+                style: TextStyle(fontSize: 13, color: Colors.grey.shade700, height: 1.3),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red.shade600,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              onPressed: () async {
+                Navigator.pop(ctx);
+                try {
+                  await controller.factoryResetMachine(machineId);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Máquina $machineName desvinculada exitosamente')),
+                    );
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                    );
+                  }
+                }
+              },
+              child: const Text('Desvincular y Liberar', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
   void _showMachineSettingsDialog(BuildContext context, AdminDashboardController controller, String machineId) {
     showDialog(

@@ -2,9 +2,20 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 
+class _NgrokHeaderClient extends http.BaseClient {
+  final http.Client _inner;
+  _NgrokHeaderClient(this._inner);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    request.headers['ngrok-skip-browser-warning'] = '1';
+    return _inner.send(request);
+  }
+}
+
 class ApiClient {
   final http.Client _client;
-  ApiClient({http.Client? client}) : _client = client ?? http.Client();
+  ApiClient({http.Client? client}) : _client = _NgrokHeaderClient(client ?? http.Client());
 
   Future<Map<String, dynamic>> login(String email, String password) async {
     final res = await _client.post(

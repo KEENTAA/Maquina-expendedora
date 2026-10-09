@@ -67,3 +67,6 @@ captured_frame.png
 .vscode/
 *.swp
 *.swo
+
+# Logs de ejecución
+logs/
