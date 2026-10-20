@@ -10,6 +10,6 @@ Para cargar el código en tu **Raspberry Pi Pico WH**:
 
 ### Cableado resumen:
 - **UART al ESP32 Maestro**: `GP4` (TX) -> RX (GPIO 19 en ESP32 Maestro), `GP5` (RX) -> TX (GPIO 22 en ESP32 Maestro), `GND` común.
-- **PN532 NFC (I2C)**: `GP6` (SDA), `GP7` (SCL), `3.3V`, `GND`.
+- **PN532 NFC (UART0 HSU)**: Pico `GP0` (TX) -> PN532 RXD, Pico `GP1` (RX) -> PN532 TXD, `VCC` (5V o 3.3V), `GND`. DIP Switches: CH1=0 (OFF), CH2=0 (OFF).
 - **HC-SR04**: `GP8` (TRIG), `GP9` (ECHO con divisor resistivo si usa 5V), `VCC`, `GND`.
 - **DHT11**: `GP10` (DATA), `3.3V`, `GND`.
