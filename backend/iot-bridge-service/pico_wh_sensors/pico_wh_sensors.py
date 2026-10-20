@@ -211,7 +211,10 @@ def pn532_tg_get_data(timeout_ms=350) -> list[int] | None:
         if resp[2] == 0x00:
             return resp[3:]  # Retorna bytes del APDU
         elif ENABLE_NFC_LOGS:
-            print(f"[NFC-APP] ⚠️ Estado de enlace RF no disponible (status=0x{resp[2]:02X})")
+            if resp[2] == 0x13:
+                print("[NFC-APP] ⚠️ Enlace RF liberado por el teléfono (status=0x13). Mantén el celular firme 2-3 seg.")
+            else:
+                print(f"[NFC-APP] ⚠️ Estado de enlace RF no disponible (status=0x{resp[2]:02X})")
     return None
 
 
@@ -335,11 +338,11 @@ def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> bool:
     cc_file = bytes([
         0x00, 0x0F,       # CCLEN = 15 bytes
         0x20,             # Versión 2.0
-        0x00, 0x54,       # MLe (Max R-APDU size = 84 bytes)
+        0x00, 0x7F,       # MLe (Max R-APDU size = 127 bytes)
         0x00, 0xFF,       # MLc (Max C-APDU size = 255 bytes)
         0x04, 0x06,       # T & L del NDEF Control TLV
         0xE1, 0x04,       # File ID del NDEF
-        (len(ndef_file) >> 8) & 0xFF, len(ndef_file) & 0xFF, # Max NDEF size
+        0x01, 0x00,       # Max NDEF size (256 bytes)
         0x00,             # Read access: Concedido sin autenticación
         0x00              # Write access: Concedido sin autenticación
     ])
@@ -353,10 +356,10 @@ def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> bool:
         0xAA, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11
     ])
 
-    # Comando TgInitAsTarget: Mode 0x05 (Passive only + PICC only)
-    # Obliga al smartphone a tratar al PN532 exclusivamente como una tarjeta NDEF Type 4
+    # Comando TgInitAsTarget: Mode 0x04 (ISO/IEC 14443-4A card only).
+    # El PN532 se presenta al smartphone como una tarjeta NDEF Type 4.
     init_cmd = bytearray([
-        0xD4, 0x8C, 0x05,        # Modo 0x05 (PICC only, Passive only)
+        0xD4, 0x8C, 0x04,        # Modo ISO/IEC 14443-4A card only
         0x04, 0x00,             # SENS_RES
         0x12, 0x34, 0x56,       # NFCID1t (3 bytes UID)
         0x20                    # SEL_RES = 0x20 (ISO/IEC 14443-4 Type 4 Tag)
@@ -384,6 +387,8 @@ def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> bool:
         return False
 
     if ENABLE_NFC_LOGS:
+        # TgInitAsTarget devuelve la activación (normalmente RATS: E0 80),
+        # no una APDU. La APDU real se recibe después por TgGetData.
         print("[NFC-APP] ⚡ ¡Señal RF detectada! Teléfono comunicando con PN532...")
 
     # El celular estableció enlace RF: intercambiar APDUs (ISO 7816-4)
@@ -393,19 +398,24 @@ def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> bool:
 
     while utime.ticks_diff(utime.ticks_ms(), trans_start) < 2500:
         apdu = pn532_tg_get_data(timeout_ms=350)
+
         if not apdu or len(apdu) < 4:
             break
 
         cla, ins, p1, p2 = apdu[0], apdu[1], apdu[2], apdu[3]
 
+        if ENABLE_NFC_LOGS:
+            apdu_hex = " ".join([f"{b:02X}" for b in apdu])
+            print(f"[NFC-APP] 📲 APDU recibido: {apdu_hex}")
+
         # ── 1. SELECT (INS = 0xA4) ──
         if ins == 0xA4:
             # Subcaso 1.1: SELECT BY NAME (P1 = 0x04)
             if p1 == 0x04:
-                # Comprobar si solicita la Aplicación NDEF (AID: D2 76 00 00 85 01 01)
+                # Comprobar si solicita Aplicación NDEF (AID: D2 76 00 00 85 01 01 o 00)
                 if (0xD2 in apdu and 
-                    len(apdu) >= apdu.index(0xD2) + 7 and 
-                    apdu[apdu.index(0xD2) : apdu.index(0xD2) + 7] == [0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01]):
+                    len(apdu) >= apdu.index(0xD2) + 6 and 
+                    apdu[apdu.index(0xD2) : apdu.index(0xD2) + 6] == [0xD2, 0x76, 0x00, 0x00, 0x85, 0x01]):
                     selected_file = "NDEF_APP"
                     if ENABLE_NFC_LOGS:
                         print("[NFC-APP] 📂 Negociando Aplicación NDEF Type 4...")
@@ -436,18 +446,20 @@ def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> bool:
         # ── 2. READ BINARY (INS = 0xB0) ──
         elif ins == 0xB0:
             offset = (p1 << 8) | p2
-            length = apdu[4] if len(apdu) > 4 else 15
+            raw_len = apdu[4] if len(apdu) > 4 else 0
+            # En ISO 7816-4, Le = 0x00 significa 256 bytes (todo el archivo disponible)
+            length = 256 if raw_len == 0 else raw_len
 
             if selected_file == "CC":
                 chunk = cc_file[offset : offset + length]
                 if ENABLE_NFC_LOGS:
-                    print(f"[NFC-APP] 📤 Enviando CC ({len(chunk)} bytes)...")
+                    print(f"[NFC-APP] 📤 Enviando CC offset={offset} ({len(chunk)} bytes)...")
                 pn532_tg_set_data(chunk + bytes([0x90, 0x00]))
 
             elif selected_file == "NDEF":
                 chunk = ndef_file[offset : offset + length]
                 if ENABLE_NFC_LOGS:
-                    print(f"[NFC-APP] 📤 Enviando NDEF offset={offset} len={len(chunk)}...")
+                    print(f"[NFC-APP] 📤 Enviando NDEF offset={offset} len={len(chunk)} (de {len(ndef_file)} bytes)...")
                 pn532_tg_set_data(chunk + bytes([0x90, 0x00]))
 
                 # Si se completó el envío del archivo NDEF
@@ -455,7 +467,6 @@ def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> bool:
                     app_delivered = True
                     if ENABLE_NFC_LOGS:
                         print(f"[NFC-APP] 🚀 ¡Enlace entregado al teléfono!: {url}")
-                    break
             else:
                 pn532_tg_set_data(bytes([0x6A, 0x82]))
 
@@ -464,11 +475,14 @@ def pn532_process_ndef_emulation(machine_id: str = "MACHINE-001") -> bool:
             pn532_tg_set_data(bytes([0x6D, 0x00]))
 
     if app_delivered:
-        utime.sleep_ms(80)
-        # Liberar formalmente el target en el chip
-        pn532_send_command(bytes([0xD4, 0x52, 0x00]))
-        pn532_read_ack(timeout_ms=50)
-        pn532_read_data(timeout_ms=50)
+        if ENABLE_NFC_LOGS:
+            print("[NFC-APP] ⏳ Esperando confirmación de lectura del smartphone...")
+        wait_start = utime.ticks_ms()
+        while utime.ticks_diff(utime.ticks_ms(), wait_start) < 700:
+            extra = pn532_tg_get_data(timeout_ms=150)
+            if not extra:
+                break
+            pn532_tg_set_data(bytes([0x90, 0x00]))
 
     # Reset total del CIU para dejar el PN532 completamente limpio y listo para el siguiente celular
     pn532_reset_rf()
