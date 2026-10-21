@@ -62,9 +62,19 @@ if ENABLE_NFC:
 # ─────────────────────────────────────────────
 TEMP_INTERVAL_MS = 5000   # Reporte ambiental cada 5 segundos
 NFC_POLL_MS      = 250    # Ciclo de sondeo NFC cada 250 ms
+DROP_SAMPLE_MS = 80
+DROP_MONITOR_MS = 10000
+DROP_THRESHOLD_CM = 1.0
+DROP_MIN_VALID_CM = 2.0
+DROP_MAX_VALID_CM = 400.0
 
 # Buffer acumulativo global para UART NFC (evita pérdida de bytes entre ACK y respuestas)
 _nfc_rx_buf = bytearray()
+_drop_state = "IDLE"
+_drop_tx_id = ""
+_drop_m1 = _drop_m2 = -1.0
+_drop_detected = False
+_drop_started_ms = _drop_last_sample_ms = 0
 
 
 def medir_distancia() -> float:
@@ -106,6 +116,59 @@ def leer_temperatura() -> float:
         # DHT11 no conectado o sin resistencia pull-up en GP10
         return -99.0
 
+
+def _drop_valid(d):
+    return DROP_MIN_VALID_CM <= d <= DROP_MAX_VALID_CM
+
+
+def _drop_reset():
+    global _drop_state, _drop_tx_id, _drop_m1, _drop_m2, _drop_detected
+    _drop_state = "IDLE"
+    _drop_tx_id = ""
+    _drop_m1 = _drop_m2 = -1.0
+    _drop_detected = False
+
+
+def _drop_arm(tx):
+    global _drop_state, _drop_tx_id, _drop_m1, _drop_m2, _drop_detected
+    m1 = medir_distancia()
+    if not tx or not _drop_valid(m1):
+        uart.write(f"CAIDA:ERROR:{tx}:M1=-1.0\n".encode())
+        _drop_reset()
+        return
+    _drop_state, _drop_tx_id = "ARMED", tx
+    _drop_m1 = _drop_m2 = m1
+    _drop_detected = False
+    uart.write(f"CAIDA:READY:{tx}:M1={m1:.1f}\n".encode())
+    if TEST_COMM_UART_ENABLED: print(f"[CAIDA] ARM | TX={tx} | M1={m1:.1f}")
+
+
+def _drop_check(tx):
+    global _drop_state, _drop_started_ms, _drop_last_sample_ms
+    if _drop_state != "ARMED" or tx != _drop_tx_id:
+        uart.write(f"CAIDA:ERROR:{tx}:M1=-1.0\n".encode())
+        return
+    _drop_state = "MONITORING"
+    _drop_started_ms = utime.ticks_ms()
+    _drop_last_sample_ms = _drop_started_ms - DROP_SAMPLE_MS
+
+
+def _drop_process():
+    global _drop_state, _drop_m2, _drop_detected, _drop_last_sample_ms
+    if _drop_state != "MONITORING": return
+    now = utime.ticks_ms()
+    if utime.ticks_diff(now, _drop_last_sample_ms) >= DROP_SAMPLE_MS:
+        _drop_last_sample_ms = now
+        d = medir_distancia()
+        if _drop_valid(d):
+            if d < _drop_m2: _drop_m2 = d
+            if _drop_m1 - d >= DROP_THRESHOLD_CM: _drop_detected = True
+    if utime.ticks_diff(now, _drop_started_ms) < DROP_MONITOR_MS: return
+    delta = round(_drop_m1 - _drop_m2, 1)
+    status = "OK" if _drop_detected else "NO"
+    uart.write(f"CAIDA:{status}:{_drop_tx_id}:M1={_drop_m1:.1f}:M2={_drop_m2:.1f}:DELTA={delta:.1f}\n".encode())
+    if TEST_COMM_UART_ENABLED: print(f"[CAIDA] {status} | M1={_drop_m1:.1f} | M2={_drop_m2:.1f} | DELTA={delta:.1f}")
+    _drop_reset()
 
 def _nfc_poll_uart():
     """Lee todos los bytes disponibles en UART hacia el búfer acumulativo."""
@@ -558,29 +621,22 @@ def main():
                 if not cmd:
                     continue
 
-                if "PING" in cmd:
+                if cmd == "PING":
                     uart.write(b"PONG\n")
-                    if TEST_COMM_UART_ENABLED:
-                        print("[ESP32-COMM] 📩 'PING' recibido -> Respondido 'PONG' al Maestro.")
-                elif "MEDIR" in cmd:
-                    # Medición para protocolo Proof of Service (Two-Phase Commit)
+                elif cmd.startswith("CAIDA:ARM:"):
+                    _drop_arm(cmd[len("CAIDA:ARM:"):])
+                elif cmd.startswith("CAIDA:CHECK:"):
+                    _drop_check(cmd[len("CAIDA:CHECK:"):])
+                elif cmd == "MEDIR":
                     d = medir_distancia()
-                    if d > 0:
-                        uart.write(f"DIST:{d}\n".encode())
-                        if TEST_COMM_UART_ENABLED:
-                            print(f"[PO-SERVICE] 📏 'MEDIR' recibido -> Tolva HC-SR04: {d} cm (Enviado al Maestro)")
-                    else:
-                        uart.write(b"DIST:-1.0\n")
-                        if TEST_COMM_UART_ENABLED:
-                            print("[PO-SERVICE] ⚠️ 'MEDIR' recibido -> Sin lectura / Timeout (-1.0 cm)")
-                elif "SCAN" in cmd:
+                    uart.write(f"DIST:{d}\n".encode())
+                elif cmd == "SCAN":
                     uid = pn532_read_passive_card()
-                    if uid:
-                        uart.write(f"NFC:{uid}\n".encode())
-                        if ENABLE_NFC_LOGS:
-                            print(f"[ESP32-COMM] 📤 Orden 'SCAN' -> Enviado UID al Maestro: {uid}")
+                    if uid: uart.write(f"NFC:{uid}\n".encode())
+        # 2. Verificación de caída no bloqueante.
+        _drop_process()
 
-        # 2. Lectura y reporte de temperatura periódico (DHT11)
+        # 3. Lectura y reporte de temperatura periódico (DHT11)
         if ENABLE_TEMP_READING:
             if utime.ticks_diff(now, last_temp) >= TEMP_INTERVAL_MS:
                 last_temp = now
@@ -591,7 +647,9 @@ def main():
                         print(f"[DHT11] 🌡️ Telemetría ambiental: {t}°C (Enviada a Maestro)")
 
         # 3. Sondeo continuo de NFC para apertura de la App Móvil
-        if ENABLE_NFC and utime.ticks_diff(now, last_nfc) >= NFC_POLL_MS:
+        # Durante la caída se prioriza el ultrasónico.
+        if (_drop_state != "MONITORING" and ENABLE_NFC and
+                utime.ticks_diff(now, last_nfc) >= NFC_POLL_MS):
             last_nfc = now
             if pn532_process_ndef_emulation():
                 if ENABLE_NFC_LOGS:

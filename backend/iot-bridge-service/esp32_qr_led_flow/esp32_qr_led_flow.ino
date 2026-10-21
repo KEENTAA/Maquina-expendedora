@@ -59,9 +59,9 @@ String picoNfcUid     = "";    // Último UID NFC recibido del Pico WH
 // ─── VARIABLES DE DISTANCIA (ahora vienen del Pico WH) ───────────────────────
 float distanciaInicial = 0.0, distanciaFinal = 0.0;
 float prevM1 = 0.0, prevM2 = 0.0;
-const float REDUCCION_MINIMA_CM = 1.0; // M2 debe ser al menos 1 cm menor que M1
-const float DISTANCIA_MIN_VALIDA_CM = 2.0;
-const float DISTANCIA_MAX_VALIDA_CM = 400.0;
+String caidaTxId = "";
+bool caidaLista = false, caidaError = false, caidaResultadoRecibido = false, caidaResultadoExitoso = false;
+float caidaM1 = -1.0, caidaM2 = -1.0, caidaDelta = 0.0;
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ================= CONFIGURACION SISTEMA ==================
@@ -298,12 +298,22 @@ void probarComunicacionPicoWH() {
  * Protocolo: "NFC:<uid>\n" | "DIST:<cm>\n" | "TEMP:<C>\n" | "PONG\n"
  * Llama esto en cada iteración del loop().
  */
+float campoCaida(const String &m, const String &c) { int i=m.indexOf(c); if(i<0)return -1.0; i+=c.length(); int j=m.indexOf(':',i); if(j<0)j=m.length(); return m.substring(i,j).toFloat(); }
+void procesarMensajeCaida(const String &m) {
+  int e=m.indexOf(':',6); if(e<0)return; String tipo=m.substring(6,e); int f=m.indexOf(':',e+1); String tx=f<0?m.substring(e+1):m.substring(e+1,f);
+  if(caidaTxId.length()==0||tx!=caidaTxId){Serial.printf("[CAIDA] TX descartada: %s\n",tx.c_str());return;}
+  if(tipo=="READY"){caidaM1=campoCaida(m,"M1=");caidaLista=caidaM1>0;caidaError=!caidaLista;Serial.printf("[CAIDA] READY M1=%.2f\n",caidaM1);}
+  else if(tipo=="OK"||tipo=="NO"){caidaM1=campoCaida(m,"M1=");caidaM2=campoCaida(m,"M2=");caidaDelta=campoCaida(m,"DELTA=");caidaResultadoExitoso=tipo=="OK";caidaResultadoRecibido=true;Serial.printf("[CAIDA] %s M1=%.2f M2=%.2f Delta=%.2f\n",tipo.c_str(),caidaM1,caidaM2,caidaDelta);}
+  else if(tipo=="ERROR"){caidaError=true;Serial.println("[CAIDA] Error de Pico");}
+}
 void procesarPicoWH() {
   while (PicoWH.available()) {
     char c = PicoWH.read();
     if (c == '\n') {
       picoUartBuf.trim();
-      if (picoUartBuf.startsWith("DIST:")) {
+      if (picoUartBuf.startsWith("CAIDA:")) {
+        procesarMensajeCaida(picoUartBuf);
+      } else if (picoUartBuf.startsWith("DIST:")) {
         picoDistancia = picoUartBuf.substring(5).toFloat();
         Serial.printf("[PICO] Distancia: %.1f cm\n", picoDistancia);
       } else if (picoUartBuf.startsWith("TEMP:")) {
@@ -340,44 +350,7 @@ void enviarNfcScan(const String &uid) {
   http.end();
 }
 
-/**
- * Solicita una medida de distancia urgente al Pico WH y espera respuesta.
- * Limpia el buffer previo para evitar datos residuales en la pila UART.
- * Devuelve distancia en cm, o -1.0 si hay timeout.
- */
-float medirDistancia() {
-  // 1. Limpiar buffer viejo acumulado en la pila UART
-  while (PicoWH.available()) {
-    PicoWH.read();
-  }
 
-  // 2. Enviar orden de medición
-  PicoWH.println("MEDIR");
-  unsigned long t = millis();
-  String buf = "";
-  
-  // 3. Esperar respuesta de la Pico WH (máximo 200 ms)
-  while (millis() - t < 200) {
-    while (PicoWH.available()) {
-      char c = PicoWH.read();
-      if (c == '\n') {
-        buf.trim();
-        if (buf.startsWith("DIST:")) {
-          float dist = buf.substring(5).toFloat();
-          if (dist > 0.0) {
-            picoDistancia = dist;
-            return picoDistancia;
-          }
-        }
-        buf = "";
-      } else {
-        buf += c;
-      }
-    }
-    delay(2);
-  }
-  return -1.0; // Timeout real
-}
 
 void dibujarMonitores(float temp = -1.0) {
   // Monitores actuales (Abajo a la derecha)
@@ -626,7 +599,6 @@ void registrarIntencionYMostrarQR() {
   }
   httpTx.end();
 
-  distanciaInicial = medirDistancia();
   tft.fillScreen(TFT_WHITE); tft.setTextColor(TFT_BLACK); tft.setTextSize(2); tft.setCursor(10, 5);
   tft.printf("PAGAR %s: Bs%s", inputCodigo.c_str(), precioSeleccionado.c_str());
   
@@ -653,137 +625,29 @@ void registrarIntencionYMostrarQR() {
   dibujarMonitores();
 }
 void processPaidTransaction(String txId) {
-  Serial.println("\n[SYSTEM] --- INICIANDO PROCESO DE DESPACHO (MODO RÁFAGA) ---");
-  Serial.printf("[SYSTEM] TX ID: %s | Slot: %s\n", txId.c_str(), inputCodigo.c_str());
-
-  // Guardar históricos para la pantalla antes de actualizar
-  prevM1 = distanciaInicial;
-  prevM2 = distanciaFinal;
-
-  // M1: distancia base tomada justo antes de activar el motor.
-  distanciaInicial = medirDistancia();
-  Serial.printf("[SENSOR] M1 (antes del motor): %.2f cm\n", distanciaInicial);
-
-  waitingForPayment = false;
-  tft.fillScreen(TFT_BLACK); 
-  tft.setTextColor(TFT_YELLOW); tft.setTextSize(2); tft.setCursor(10, 20);
-  tft.println("PAGO CONFIRMADO"); 
-  tft.setTextColor(TFT_WHITE); tft.println("INICIANDO MOTOR...");
-
-  // 1. MANDAR SEÑAL AL ESCLAVO
-  Serial.printf("[SLAVE] >>> Enviando MOVE:%s\n", inputCodigo.c_str());
-  Serial2.println("MOVE:" + inputCodigo);
-
-  // 2. MONITOREO EN RÁFAGA CON CONTEO REGRESIVO (10 SEGUNDOS)
-  distanciaFinal = distanciaInicial; // M2 conserva la menor distancia observada
-  bool detectado = false;
-  unsigned long startBurst = millis();
-  int lastSec = -1;
-
-  Serial.println("[SENSOR] Iniciando ráfaga de medidas (10s)...");
-
-  while (millis() - startBurst < 10000) {
-    unsigned long elapsed = millis() - startBurst;
-    int secondsLeft = 10 - (elapsed / 1000);
-
-    // Actualizar cuenta regresiva en pantalla (sin parpadeo)
-    if (secondsLeft != lastSec) {
-      lastSec = secondsLeft;
-      tft.fillRect(0, 80, tft.width(), 40, TFT_BLACK); // Limpiar franja del contador
-      tft.setCursor(20, 90);
-      tft.setTextColor(TFT_CYAN); tft.setTextSize(2);
-      tft.printf("VIGILANDO: %ds", secondsLeft);
-      Serial.printf("[SYSTEM] Tiempo restante: %ds...\n", secondsLeft);
+  Serial.println("\n[SYSTEM] --- DESPACHO: PICO VERIFICA CAIDA ---");
+  prevM1=distanciaInicial; prevM2=distanciaFinal; waitingForPayment=false;
+  caidaTxId=txId; caidaLista=caidaError=caidaResultadoRecibido=caidaResultadoExitoso=false; caidaM1=caidaM2=-1.0; caidaDelta=0.0;
+  PicoWH.println("CAIDA:ARM:"+txId);
+  unsigned long inicio=millis(); while(millis()-inicio<1500&&!caidaLista&&!caidaError){procesarPicoWH();delay(2);}
+  bool detectado=false;
+  if(!caidaLista){distanciaInicial=distanciaFinal=-1.0;Serial.println("[CAIDA] M1 invalida o sin respuesta; motor cancelado.");}
+  else {
+    distanciaInicial=caidaM1;distanciaFinal=caidaM1;
+    tft.fillScreen(TFT_BLACK);tft.setTextColor(TFT_YELLOW);tft.setTextSize(2);tft.setCursor(10,20);tft.println("PAGO CONFIRMADO");tft.setTextColor(TFT_WHITE);tft.println("INICIANDO MOTOR...");
+    Serial2.println("MOVE:"+inputCodigo); PicoWH.println("CAIDA:CHECK:"+txId);
+    inicio=millis();int ultimo=-1;
+    while(millis()-inicio<12000&&!caidaResultadoRecibido&&!caidaError){
+      procesarPicoWH(); int seg=(int)((12000-(millis()-inicio)+999)/1000);
+      if(seg!=ultimo){ultimo=seg;tft.fillRect(0,80,tft.width(),40,TFT_BLACK);tft.setCursor(20,90);tft.setTextColor(TFT_CYAN);tft.setTextSize(2);tft.printf("VIGILANDO: %ds",seg);}
+      if(Serial2.available()){String r=Serial2.readStringUntil('\n');r.trim();if(r=="DONE")Serial.println("[SLAVE] Motor termino.");} delay(10);
     }
-
-    // Medida a alta velocidad
-    float d = medirDistancia();
-    
-    // Mostramos cada medida en el serial para análisis si es válida
-    if (d > 0.0) {
-      Serial.printf("[RAFAGA] Dist: %.2f cm\n", d);
-
-      // Solo procesamos lecturas físicas coherentes y las comparamos con M1.
-      if (d >= DISTANCIA_MIN_VALIDA_CM && d <= DISTANCIA_MAX_VALIDA_CM) {
-        if (d < distanciaFinal) {
-          distanciaFinal = d; // Conservar M2: el punto más cercano de toda la ráfaga
-        }
-
-        float reduccion = distanciaInicial - d;
-        // Éxito si en algún momento M2 baja al menos 1 cm respecto de M1.
-        if (distanciaInicial >= DISTANCIA_MIN_VALIDA_CM &&
-            reduccion >= REDUCCION_MINIMA_CM) {
-          detectado = true;
-          Serial.printf("[SENSOR] Producto detectado: M1=%.2f, M2=%.2f, reduccion=%.2f cm\n",
-                        distanciaInicial, d, reduccion);
-        }
-      }
-    }
-
-    // Revisar si el esclavo responde DONE mientras medimos
-    if (Serial2.available()) {
-      String resp = Serial2.readStringUntil('\n');
-      resp.trim();
-      if (resp == "DONE") Serial.println("[SLAVE] Motor terminó su giro.");
-    }
-
-    delay(20); // Pausa óptima para la ráfaga
+    if(caidaResultadoRecibido){distanciaInicial=caidaM1;distanciaFinal=caidaM2;detectado=caidaResultadoExitoso;}else{distanciaFinal=-1.0;Serial.println("[CAIDA] Timeout resultado final.");}
   }
-
-  // 3. Determinar resultado. No se borra un éxito si el producto ya pasó.
-  if (distanciaInicial < DISTANCIA_MIN_VALIDA_CM ||
-      distanciaInicial > DISTANCIA_MAX_VALIDA_CM) {
-    detectado = false;
-    Serial.printf("[SENSOR] M1 invalida (%.2f cm); no se puede verificar la entrega.\n", distanciaInicial);
-  }
-
-  Serial.printf("[SENSOR] RESUMEN -> M1: %.2f | M2 minima: %.2f | Reduccion requerida: %.1f cm | Entregado: %s\n",
-                distanciaInicial, distanciaFinal, REDUCCION_MINIMA_CM, detectado ? "SI" : "NO");
-
-  // MOSTRAR RESULTADO EN TFT
-  tft.fillScreen(TFT_BLACK);
-  if (detectado) {
-    tft.setCursor(10, 80);
-    tft.setTextColor(TFT_GREEN); tft.setTextSize(3); tft.println("¡EXITO!");
-    tft.setTextSize(2); tft.println("PRODUCTO ENTREGADO");
-    Serial.println("[RESULT] Despacho exitoso (Detección en ráfaga).");
-  } else {
-    tft.setCursor(10, 60);
-    tft.setTextColor(TFT_RED); tft.setTextSize(3); tft.println("ERROR");
-    tft.setTextSize(2);
-    tft.println("NO SE DETECTO");
-    tft.println("LA CAIDA DEL");
-    tft.println("PRODUCTO");
-    Serial.println("[RESULT] No se detectó ninguna caída significante.");
-  }
-
-  // 4. NOTIFICAR AL BACKEND (M1 y M2-mínimo)
-  if (WiFi.status() == WL_CONNECTED) {
-    WiFiClientSecure client;
-    HTTPClient http;
-    String endPoint = detectado ? "/dispense-result" : "/refund";
-    String url = baseUrl() + "/api/v1/transactions/" + txId + endPoint;
-    
-    Serial.printf("[HTTP] Notificando a: %s\n", url.c_str());
-    setupHttpClient(http, client, url);
-    http.addHeader("Content-Type", "application/json");
-    
-    // Enviamos M1 como initial_distance y el M2 más bajo como final_distance
-    String telemetry = "{\"success\":" + String(detectado?"true":"false") + 
-                       ",\"initial_distance\":" + String(distanciaInicial) + 
-                       ",\"final_distance\":" + String(distanciaFinal) + "}";
-    
-    int httpCode = http.POST(telemetry);
-    if (httpCode > 0) {
-      Serial.printf("[HTTP] Code: %d\n", httpCode);
-    }
-    http.end();
-  }
-
-  Serial.println("[SYSTEM] --- FIN DEL PROCESO ---\n");
-  dibujarMonitores();
-  delay(3000);
-  resetState();
+  Serial.printf("[SENSOR] RESUMEN -> M1: %.2f | M2: %.2f | Delta: %.2f | Entregado: %s\n",distanciaInicial,distanciaFinal,caidaDelta,detectado?"SI":"NO");
+  tft.fillScreen(TFT_BLACK);if(detectado){tft.setCursor(10,80);tft.setTextColor(TFT_GREEN);tft.setTextSize(3);tft.println("¡EXITO!");tft.setTextSize(2);tft.println("PRODUCTO ENTREGADO");}else{tft.setCursor(10,60);tft.setTextColor(TFT_RED);tft.setTextSize(3);tft.println("ERROR");tft.setTextSize(2);tft.println("NO SE DETECTO");tft.println("LA CAIDA DEL");tft.println("PRODUCTO");}
+  if(WiFi.status()==WL_CONNECTED){WiFiClientSecure client;HTTPClient http;String url=baseUrl()+"/api/v1/transactions/"+txId+(detectado?"/dispense-result":"/refund");setupHttpClient(http,client,url);http.addHeader("Content-Type","application/json");String telemetry="{\"success\":"+String(detectado?"true":"false")+",\"initial_distance\":"+String(distanciaInicial)+",\"final_distance\":"+String(distanciaFinal)+"}";int code=http.POST(telemetry);if(code>0)Serial.printf("[HTTP] Code: %d\n",code);http.end();}
+  caidaTxId="";dibujarMonitores();delay(3000);resetState();
 }
 
 void connectWifi() {
