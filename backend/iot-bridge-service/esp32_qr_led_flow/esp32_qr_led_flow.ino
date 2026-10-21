@@ -59,8 +59,9 @@ String picoNfcUid     = "";    // Último UID NFC recibido del Pico WH
 // ─── VARIABLES DE DISTANCIA (ahora vienen del Pico WH) ───────────────────────
 float distanciaInicial = 0.0, distanciaFinal = 0.0;
 float prevM1 = 0.0, prevM2 = 0.0;
-const float REPOSO_MIN_CM = 30.0; // Margen de reposo / bandeja vacía: 30.0 a 35.0 cm
-const float REPOSO_MAX_CM = 35.0; // Menor a 30cm o mayor a 35cm -> PRODUCTO ENTREGADO
+const float REDUCCION_MINIMA_CM = 1.0; // M2 debe ser al menos 1 cm menor que M1
+const float DISTANCIA_MIN_VALIDA_CM = 2.0;
+const float DISTANCIA_MAX_VALIDA_CM = 400.0;
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ================= CONFIGURACION SISTEMA ==================
@@ -659,11 +660,9 @@ void processPaidTransaction(String txId) {
   prevM1 = distanciaInicial;
   prevM2 = distanciaFinal;
 
-  // Asegurar que M1 (Base) es válida
-  if (distanciaInicial > 390.0) {
-    distanciaInicial = medirDistancia();
-    Serial.printf("[SENSOR] Calibrando M1 (Base): %.2f cm\n", distanciaInicial);
-  }
+  // M1: distancia base tomada justo antes de activar el motor.
+  distanciaInicial = medirDistancia();
+  Serial.printf("[SENSOR] M1 (antes del motor): %.2f cm\n", distanciaInicial);
 
   waitingForPayment = false;
   tft.fillScreen(TFT_BLACK); 
@@ -676,7 +675,7 @@ void processPaidTransaction(String txId) {
   Serial2.println("MOVE:" + inputCodigo);
 
   // 2. MONITOREO EN RÁFAGA CON CONTEO REGRESIVO (10 SEGUNDOS)
-  distanciaFinal = distanciaInicial; // M2 empieza siendo igual a la base
+  distanciaFinal = distanciaInicial; // M2 conserva la menor distancia observada
   bool detectado = false;
   unsigned long startBurst = millis();
   int lastSec = -1;
@@ -704,14 +703,19 @@ void processPaidTransaction(String txId) {
     if (d > 0.0) {
       Serial.printf("[RAFAGA] Dist: %.2f cm\n", d);
 
-      // Solo procesamos lecturas físicas coherentes
-      if (d >= 2.0 && d <= 50.0) {
-        distanciaFinal = d;
+      // Solo procesamos lecturas físicas coherentes y las comparamos con M1.
+      if (d >= DISTANCIA_MIN_VALIDA_CM && d <= DISTANCIA_MAX_VALIDA_CM) {
+        if (d < distanciaFinal) {
+          distanciaFinal = d; // Conservar M2: el punto más cercano de toda la ráfaga
+        }
 
-        // Regla: si la distancia es menor a 30cm o mayor a 35cm, cayó un producto
-        if (d < REPOSO_MIN_CM || d > REPOSO_MAX_CM) {
+        float reduccion = distanciaInicial - d;
+        // Éxito si en algún momento M2 baja al menos 1 cm respecto de M1.
+        if (distanciaInicial >= DISTANCIA_MIN_VALIDA_CM &&
+            reduccion >= REDUCCION_MINIMA_CM) {
           detectado = true;
-          Serial.printf("[SENSOR] 🎯 ¡Producto detectado fuera de reposo! (Medida: %.2f cm)\n", d);
+          Serial.printf("[SENSOR] Producto detectado: M1=%.2f, M2=%.2f, reduccion=%.2f cm\n",
+                        distanciaInicial, d, reduccion);
         }
       }
     }
@@ -726,20 +730,15 @@ void processPaidTransaction(String txId) {
     delay(20); // Pausa óptima para la ráfaga
   }
 
-  // 3. DETERMINAR RESULTADO FINAL
-  // Si la distancia final quedó dentro del margen de reposo (30 a 35 cm) y nunca hubo caída detectada:
-  // la bandeja sigue vacía en reposo -> NO SE ENTREGÓ EL PRODUCTO.
-  if (distanciaFinal >= REPOSO_MIN_CM && distanciaFinal <= REPOSO_MAX_CM) {
+  // 3. Determinar resultado. No se borra un éxito si el producto ya pasó.
+  if (distanciaInicial < DISTANCIA_MIN_VALIDA_CM ||
+      distanciaInicial > DISTANCIA_MAX_VALIDA_CM) {
     detectado = false;
-    Serial.printf("[SENSOR] ⚠️ M2 final (%.2f cm) está en margen de reposo (%.1f-%.1f cm). NO ENTREGADO.\n", 
-                  distanciaFinal, REPOSO_MIN_CM, REPOSO_MAX_CM);
-  } else if (distanciaFinal > 0.5 && (distanciaFinal < REPOSO_MIN_CM || distanciaFinal > REPOSO_MAX_CM)) {
-    // Si la lectura final quedó alterada fuera de [30, 35] cm -> Confirmar entrega
-    detectado = true;
+    Serial.printf("[SENSOR] M1 invalida (%.2f cm); no se puede verificar la entrega.\n", distanciaInicial);
   }
 
-  Serial.printf("[SENSOR] RESUMEN -> M1 (Base): %.2f | M2 (Final): %.2f | Margen Reposo: %.1f-%.1f cm | Entregado: %s\n", 
-                distanciaInicial, distanciaFinal, REPOSO_MIN_CM, REPOSO_MAX_CM, detectado ? "SI" : "NO");
+  Serial.printf("[SENSOR] RESUMEN -> M1: %.2f | M2 minima: %.2f | Reduccion requerida: %.1f cm | Entregado: %s\n",
+                distanciaInicial, distanciaFinal, REDUCCION_MINIMA_CM, detectado ? "SI" : "NO");
 
   // MOSTRAR RESULTADO EN TFT
   tft.fillScreen(TFT_BLACK);
