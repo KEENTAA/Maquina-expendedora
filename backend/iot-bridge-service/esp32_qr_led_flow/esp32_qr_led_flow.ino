@@ -171,6 +171,10 @@ bool waitingForPayment = false;
 
 // --- UTILIDADES ---
 void mostrarCatalogo(bool limpiarPantallaCompleta = true); // Prototipo
+void dibujarHeaderCatalogo();
+void dibujarBannerPIN();
+void dibujarBannerCodigo();
+void dibujarMonitores(float temp = -1.0);
 
 void resetState() {
   inputCodigo = "";
@@ -352,25 +356,11 @@ void enviarNfcScan(const String &uid) {
 
 
 
-void dibujarMonitores(float temp = -1.0) {
-  // Monitores actuales (Abajo a la derecha)
-  int x = tft.width() - 85, y = tft.height() - 65; 
-  tft.fillRect(x, y, 80, 60, TFT_BLACK); tft.drawRect(x, y, 80, 60, TFT_DARKGREY);
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_CYAN); tft.setCursor(x+5, y+5); tft.print("M1:"); tft.print(distanciaInicial,1);
-  tft.setTextColor(TFT_MAGENTA); tft.setCursor(x+5, y+25); tft.print("M2:"); tft.print(distanciaFinal,1);
-  if (temp > -1.0) {
-    tft.setTextColor(TFT_YELLOW); tft.setCursor(x+5, y+45); tft.print("T:"); tft.print(temp,1); tft.print("C");
+void dibujarMonitores(float temp) {
+  // M1 y M2 eliminados de pantalla a solicitud del usuario.
+  if (!waitingForPayment && inputCodigo.length() == 0) {
+    dibujarBannerPIN();
   }
-
-  // Histórico / Datos anteriores (Arriba a la derecha)
-  int hX = tft.width() - 120, hY = 5;
-  tft.fillRect(hX, hY, 115, 25, TFT_BLACK);
-  tft.drawRect(hX, hY, 115, 25, TFT_DARKGREY);
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_LIGHTGREY);
-  tft.setCursor(hX+5, hY+10);
-  tft.printf("P:M1:%.1f M2:%.1f", prevM1, prevM2);
 }
 
 String extractTxId(const String& body) {
@@ -407,25 +397,60 @@ void enviarTelemetria() {
   httpIot.end();
 }
 
-void dibujarBannerCodigo() {
-  // Banner de emparejamiento superior
-  tft.fillRect(0, 0, tft.width(), 38, TFT_NAVY);
-  tft.drawFastHLine(0, 38, tft.width(), TFT_WHITE);
-  
+void dibujarHeaderCatalogo() {
+  tft.fillRect(0, 0, tft.width(), 30, TFT_NAVY);
+  tft.drawFastHLine(0, 30, tft.width(), TFT_CYAN);
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_YELLOW);
+  tft.setCursor(10, 7);
+  tft.print("GROG VENDING");
+}
+
+void dibujarBannerPIN() {
+  // Ocupa exactamente el 20% inferior de la pantalla con diseno enriquecido
+  int footerH = (int)(tft.height() * 0.20);
+  if (footerH < 60) footerH = 64;
+  int footerY = tft.height() - footerH;
+
+  // Fondo del pie de pantalla
+  tft.fillRect(0, footerY, tft.width(), footerH, TFT_NAVY);
+  tft.drawFastHLine(0, footerY, tft.width(), TFT_CYAN);
+  tft.drawFastHLine(0, footerY + 1, tft.width(), 0x03EF);
+
+  // Fila superior: Nombre de app y temporizador de expiración
   tft.setTextSize(1);
   tft.setTextColor(TFT_WHITE);
-  tft.setCursor(6, 6);
-  tft.print("APP GROG: COMPRA CON CODIGO");
-  
+  tft.setCursor(10, footerY + 6);
+  tft.print("APP GROG MOVIL");
+
+  tft.setTextColor(TFT_GREEN);
+  tft.setCursor(tft.width() - 88, footerY + 6);
+  tft.printf("EXPIRA: %02ds", currentCodeSecondsLeft);
+
+  // Tarjeta central estilizada para el PIN
+  int boxX = 8, boxY = footerY + 19, boxW = tft.width() - 16, boxH = 38;
+  tft.fillRoundRect(boxX, boxY, boxW, boxH, 4, TFT_BLACK);
+  tft.drawRoundRect(boxX, boxY, boxW, boxH, 4, TFT_CYAN);
+
   tft.setTextSize(2);
-  tft.setCursor(6, 18);
-  tft.setTextColor(TFT_YELLOW);
-  tft.printf("PIN: %s", currentSessionCode.c_str());
-  
-  tft.setTextSize(1);
   tft.setTextColor(TFT_CYAN);
-  tft.setCursor(tft.width() - 55, 22);
-  tft.printf("%ds", currentCodeSecondsLeft);
+  tft.setCursor(boxX + 10, boxY + 11);
+  tft.print("PIN");
+
+  tft.drawFastVLine(boxX + 54, boxY + 6, boxH - 12, TFT_DARKGREY);
+
+  tft.setTextSize(3);
+  tft.setTextColor(TFT_YELLOW);
+  tft.setCursor(boxX + 66, boxY + 8);
+  if (currentSessionCode.length() > 0) {
+    tft.print(currentSessionCode);
+  } else {
+    tft.print("---");
+  }
+}
+
+void dibujarBannerCodigo() {
+  dibujarBannerPIN();
 }
 
 void fetchSessionCode() {
@@ -459,10 +484,15 @@ void fetchSessionCode() {
 }
 
 void mostrarCatalogo(bool limpiarPantallaCompleta) {
+  int footerH = (int)(tft.height() * 0.20);
+  if (footerH < 60) footerH = 64;
+  int footerY = tft.height() - footerH;
+
   if (limpiarPantallaCompleta) {
     tft.fillScreen(TFT_BLACK);
     fetchSessionCode();
-    dibujarBannerCodigo();
+    dibujarHeaderCatalogo();
+    dibujarBannerPIN();
   }
   
   if (WiFi.status() != WL_CONNECTED) {
@@ -472,49 +502,98 @@ void mostrarCatalogo(bool limpiarPantallaCompleta) {
 
   WiFiClientSecure client;
   HTTPClient http;
-  String url = vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/inventory?include_images=false&only_enabled=true";
+  String url = vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/inventory?include_images=false&only_enabled=true&only_in_stock=true";
   
   setupHttpClient(http, client, url);
   int httpCode = http.GET();
   
-  // Limpiar solo el área de productos entre banner y pie de pantalla
-  tft.fillRect(0, 39, tft.width(), tft.height() - 39 - 45, TFT_BLACK);
+  // Limpiar solo el área de productos entre header y banner PIN inferior
+  tft.fillRect(0, 31, tft.width(), footerY - 31, TFT_BLACK);
 
   if (httpCode == 200) {
     String payload = http.getString(); 
-    int pos = 0, y = 48;
-    while ((pos = payload.indexOf("\"slot\":", pos)) != -1 && y < (tft.height() - 45)) {
+    int pos = 0, y = 38;
+    int productosVisibles = 0;
+    while ((pos = payload.indexOf("\"slot\":", pos)) != -1 && (y + 24) <= footerY) {
       yield(); 
-      int sS = payload.indexOf("\"", pos + 7) + 1; 
-      String slot = payload.substring(sS, payload.indexOf("\"", sS));
-      int nPos = payload.indexOf("\"product_name\":", pos); 
-      int nS = payload.indexOf("\"", nPos + 15) + 1; 
-      String name = payload.substring(nS, payload.indexOf("\"", nS));
-      int pPos = payload.indexOf("\"price\":", pos); 
-      int pS = payload.indexOf(":", pPos) + 1; 
-      while(pS < payload.length() && (payload[pS] == ' ' || payload[pS] == '\"')) pS++;
-      int pE = pS; 
-      while(pE < payload.length() && payload[pE] != ',' && payload[pE] != '}' && payload[pE] != '\"' && payload[pE] != ' ') pE++;
-      String price = payload.substring(pS, pE);
+      int nextPos = payload.indexOf("\"slot\":", pos + 7);
+      int blockEnd = (nextPos != -1) ? nextPos : payload.length();
+      String itemBlock = payload.substring(pos, blockEnd);
+
+      // 1. Extraer slot
+      int sS = itemBlock.indexOf("\"", 7) + 1; 
+      String slot = itemBlock.substring(sS, itemBlock.indexOf("\"", sS));
+
+      // 2. Extraer nombre
+      String name = "";
+      int nPos = itemBlock.indexOf("\"product_name\":"); 
+      if (nPos != -1) {
+        int nS = itemBlock.indexOf("\"", nPos + 15) + 1; 
+        name = itemBlock.substring(nS, itemBlock.indexOf("\"", nS));
+      }
+
+      // 3. Extraer precio
+      String price = "";
+      int pPos = itemBlock.indexOf("\"price\":"); 
+      if (pPos != -1) {
+        int pS = itemBlock.indexOf(":", pPos) + 1; 
+        while(pS < itemBlock.length() && (itemBlock[pS] == ' ' || itemBlock[pS] == '\"')) pS++;
+        int pE = pS; 
+        while(pE < itemBlock.length() && itemBlock[pE] != ',' && itemBlock[pE] != '}' && itemBlock[pE] != '\"' && itemBlock[pE] != ' ') pE++;
+        price = itemBlock.substring(pS, pE);
+      }
       
-      // Doble verificación: comprobar is_enabled en este bloque
-      int ePos = payload.indexOf("\"is_enabled\":", pos);
+      // 4. Extraer stock
+      int stock = 0;
+      int stPos = itemBlock.indexOf("\"stock\":");
+      if (stPos != -1) {
+        int stS = itemBlock.indexOf(":", stPos) + 1;
+        while(stS < itemBlock.length() && (itemBlock[stS] == ' ' || itemBlock[stS] == '\"')) stS++;
+        int stE = stS;
+        while(stE < itemBlock.length() && itemBlock[stE] != ',' && itemBlock[stE] != '}' && itemBlock[stE] != '\"' && itemBlock[stE] != ' ') stE++;
+        stock = itemBlock.substring(stS, stE).toInt();
+      }
+
+      // 5. Extraer is_enabled
       bool isEnabled = true;
-      if (ePos != -1 && ePos < pos + 300) {
-        if (payload.indexOf("false", ePos) != -1 && payload.indexOf("false", ePos) < ePos + 10) {
+      int ePos = itemBlock.indexOf("\"is_enabled\":");
+      if (ePos != -1) {
+        int eS = itemBlock.indexOf(":", ePos) + 1;
+        while(eS < itemBlock.length() && itemBlock[eS] == ' ') eS++;
+        if (itemBlock.substring(eS).startsWith("false")) {
           isEnabled = false;
         }
       }
 
-      if (isEnabled) {
+      // 6. FILTRO ESTRICTO: Solo mostrar si está habilitado Y tiene stock mayor a cero
+      if (isEnabled && stock > 0) {
         tft.setCursor(10, y); tft.setTextSize(2);
         tft.setTextColor(TFT_YELLOW); tft.print(slot);
         tft.setTextColor(TFT_WHITE); tft.print(": "); 
         tft.print(name.substring(0, 9)); 
         tft.setTextColor(TFT_GREEN); tft.print(" Bs"); tft.println(price);
         y += 26;
+        productosVisibles++;
+      } else {
+        Serial.printf("[CATALOGO] Ocultando de pantalla TFT: Slot %s (%s) - Stock: %d, isEnabled: %s\n",
+                      slot.c_str(), name.c_str(), stock, isEnabled ? "true" : "false");
       }
-      pos = pPos + 5; 
+
+      if (nextPos == -1) break;
+      pos = nextPos;
+    }
+
+    if (productosVisibles == 0) {
+      tft.setCursor(10, 80);
+      tft.setTextSize(2);
+      tft.setTextColor(TFT_RED);
+      tft.println("SIN PRODUCTOS");
+      tft.setCursor(10, 110);
+      tft.setTextSize(1);
+      tft.setTextColor(TFT_LIGHTGREY);
+      tft.println("Todos los slots estan");
+      tft.setCursor(10, 125);
+      tft.println("agotados o bloqueados.");
     }
   } else {
     char sslErr[128] = {0};
@@ -525,14 +604,7 @@ void mostrarCatalogo(bool limpiarPantallaCompleta) {
   }
   http.end();
   
-  // LEYENDA DINAMICA EN CATALOGO
-  tft.fillRect(0, tft.height()-45, tft.width(), 45, TFT_BLACK);
-  tft.drawFastHLine(0, tft.height()-45, tft.width(), TFT_DARKGREY);
-  tft.setTextSize(1); tft.setTextColor(TFT_LIGHTGREY); 
-  tft.setCursor(10, tft.height()-35); tft.print("D: COMPRAR   *: LIMPIAR");
-  tft.setCursor(10, tft.height()-20); tft.print("CODIGOS: A1-A3, A7, C1-C3, C7");
-  
-  dibujarMonitores();
+  dibujarBannerPIN();
 }
 
 bool lightsOn = false;
@@ -549,18 +621,37 @@ void registrarIntencionYMostrarQR() {
   WiFiClientSecure client;
   HTTPClient http;
   
-  // 1. Obtener info del slot y verificar si está habilitado
+  // 1. Obtener info del slot y verificar si está habilitado y con stock
   String slotUrl = vendingUrl() + "/api/v1/machines/" + MACHINE_ID + "/slots/" + inputCodigo;
   setupHttpClient(http, client, slotUrl);
   int httpCode = http.GET();
   bool canBuy = false;
+  bool isAgotado = false;
   
   Serial.printf("[SLOT-CHECK] Consultando: %s | HTTP: %d\n", slotUrl.c_str(), httpCode);
   if (httpCode == 200) {
     String payload = http.getString(); 
     Serial.printf("[SLOT-CHECK] Payload: %s\n", payload.c_str());
-    // Buscar "is_enabled":true
-    if (payload.indexOf("\"is_enabled\":true") != -1 || payload.indexOf("\"is_enabled\": true") != -1) {
+
+    bool isEnabled = (payload.indexOf("\"is_enabled\":true") != -1 || payload.indexOf("\"is_enabled\": true") != -1);
+
+    // Extraer stock del slot
+    int stock = 0;
+    int stPos = payload.indexOf("\"stock\":");
+    if (stPos != -1) {
+      int stS = payload.indexOf(":", stPos) + 1;
+      while (stS < payload.length() && (payload[stS] == ' ' || payload[stS] == '\"')) stS++;
+      int stE = stS;
+      while (stE < payload.length() && payload[stE] != ',' && payload[stE] != '}' && payload[stE] != '\"' && payload[stE] != ' ') stE++;
+      stock = payload.substring(stS, stE).toInt();
+    }
+
+    if (stock <= 0) {
+      isAgotado = true;
+    }
+
+    // Solo se permite comprar si está habilitado Y cuenta con stock > 0
+    if (isEnabled && stock > 0) {
       canBuy = true;
       // Extraer precio
       int pP = payload.indexOf("\"price\":"); 
@@ -571,6 +662,10 @@ void registrarIntencionYMostrarQR() {
         while(pE < payload.length() && payload[pE] != ',' && payload[pE] != '}' && payload[pE] != '\"' && payload[pE] != ' ') pE++;
         precioSeleccionado = payload.substring(pS, pE);
       }
+    } else {
+      canBuy = false;
+      Serial.printf("[SLOT-CHECK] ⚠️ Slot %s bloqueado/agotado: isEnabled=%s, stock=%d\n",
+                    inputCodigo.c_str(), isEnabled ? "true" : "false", stock);
     }
   }
   http.end();
@@ -578,10 +673,25 @@ void registrarIntencionYMostrarQR() {
   if (!canBuy) {
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_RED); tft.setTextSize(2);
-    tft.setCursor(10, 80);
-    tft.println("SLOT NO DISPONIBLE");
+    tft.setCursor(10, 70);
+    tft.println("PRODUCTO NO");
+    tft.setCursor(10, 95);
+    tft.println("DISPONIBLE");
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_YELLOW);
+    tft.setCursor(10, 130);
+    if (isAgotado) {
+      tft.println("El producto seleccionado");
+      tft.setCursor(10, 145);
+      tft.println("esta agotado (stock 0).");
+    } else {
+      tft.println("El slot seleccionado esta");
+      tft.setCursor(10, 145);
+      tft.println("bloqueado temporalmente.");
+    }
     tft.setTextColor(TFT_WHITE);
-    tft.println("POR FAVOR ELIJA OTRO");
+    tft.setCursor(10, 175);
+    tft.println("Por favor elija otro producto.");
     delay(3000);
     resetState();
     return;

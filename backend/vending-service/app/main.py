@@ -369,7 +369,12 @@ def get_machine(machine_id: str) -> dict:
 
 
 @app.get("/api/v1/machines/{machine_id}/inventory")
-def machine_inventory(machine_id: str, include_images: bool = True, only_enabled: bool = False) -> dict:
+def machine_inventory(
+    machine_id: str, 
+    include_images: bool = True, 
+    only_enabled: bool = False,
+    only_in_stock: bool = False
+) -> dict:
     with SessionLocal() as db:
         query = (
             db.query(Inventory, Product)
@@ -378,6 +383,8 @@ def machine_inventory(machine_id: str, include_images: bool = True, only_enabled
         )
         if only_enabled:
             query = query.filter(Inventory.is_enabled == 1)
+        if only_in_stock:
+            query = query.filter(Inventory.stock > 0)
         rows = query.order_by(Inventory.display_order.asc(), Inventory.slot.asc()).all()
         return {
             "items": [
